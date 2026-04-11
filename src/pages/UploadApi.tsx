@@ -2,7 +2,10 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileJson, CheckCircle2, Loader2, Globe, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import { createScan, updateScan } from "@/lib/scanService";
+import { useToast } from "@/hooks/use-toast";
 
 const mockEndpoints = [
   { method: "POST", path: "/api/auth/login", type: "Login" },
@@ -15,11 +18,32 @@ const mockEndpoints = [
 export default function UploadApi() {
   const [status, setStatus] = useState<"idle" | "uploading" | "done">("idle");
   const [fileType, setFileType] = useState<string>("");
+  const [scanId, setScanId] = useState<string | null>(null);
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const navigate = useNavigate();
 
-  const handleUpload = (type: string) => {
+  const handleUpload = async (type: string) => {
     setFileType(type);
     setStatus("uploading");
-    setTimeout(() => setStatus("done"), 2500);
+
+    try {
+      const apiType = type.includes("Swagger") ? "swagger" : "postman";
+      const scan = await createScan("api.example.com", apiType, user!.id);
+      setScanId(scan.id);
+
+      // Simulate analysis
+      setTimeout(async () => {
+        await updateScan(scan.id, {
+          endpoints_detected: mockEndpoints,
+          status: "pending",
+        });
+        setStatus("done");
+      }, 2500);
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+      setStatus("idle");
+    }
   };
 
   return (
@@ -57,22 +81,13 @@ export default function UploadApi() {
         )}
 
         {status === "uploading" && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-20"
-          >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-20">
             <Loader2 className="h-12 w-12 text-primary mx-auto mb-4 animate-spin" />
             <p className="text-lg font-medium mb-2">Analyzing {fileType}...</p>
             <p className="text-sm text-muted-foreground">Scanning for authentication endpoints</p>
             <div className="mt-8 max-w-md mx-auto">
               <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
-                <motion.div
-                  className="h-full bg-primary rounded-full"
-                  initial={{ width: "0%" }}
-                  animate={{ width: "100%" }}
-                  transition={{ duration: 2.5 }}
-                />
+                <motion.div className="h-full bg-primary rounded-full" initial={{ width: "0%" }} animate={{ width: "100%" }} transition={{ duration: 2.5 }} />
               </div>
             </div>
           </motion.div>
@@ -83,28 +98,14 @@ export default function UploadApi() {
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
               <div className="flex items-center gap-2 mb-6 text-primary">
                 <CheckCircle2 className="h-5 w-5" />
-                <span className="font-medium">
-                  {mockEndpoints.length} authentication endpoints detected
-                </span>
+                <span className="font-medium">{mockEndpoints.length} authentication endpoints detected</span>
               </div>
 
               <div className="rounded-lg border border-border overflow-hidden">
-                <div className="bg-secondary/50 px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">
-                  Detected Endpoints
-                </div>
+                <div className="bg-secondary/50 px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">Detected Endpoints</div>
                 {mockEndpoints.map((ep, i) => (
-                  <motion.div
-                    key={ep.path}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.1 }}
-                    className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/30 transition-colors"
-                  >
-                    <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${
-                      ep.method === "POST" ? "bg-cyber-blue/10 text-cyber-blue" : "bg-primary/10 text-primary"
-                    }`}>
-                      {ep.method}
-                    </span>
+                  <motion.div key={ep.path} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }} className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                    <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-cyber-blue/10 text-cyber-blue" : "bg-primary/10 text-primary"}`}>{ep.method}</span>
                     <span className="font-mono text-sm flex-1">{ep.path}</span>
                     <span className="text-xs text-muted-foreground">{ep.type}</span>
                   </motion.div>
@@ -112,14 +113,10 @@ export default function UploadApi() {
               </div>
 
               <div className="mt-8 flex gap-4">
-                <Button asChild className="glow-green font-mono">
-                  <Link to="/scanner">
-                    Run Scanner <ArrowRight className="ml-2 h-4 w-4" />
-                  </Link>
+                <Button onClick={() => navigate("/scanner", { state: { scanId } })} className="glow-green font-mono">
+                  Run Scanner <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
-                <Button variant="outline" onClick={() => setStatus("idle")} className="font-mono">
-                  Upload Another
-                </Button>
+                <Button variant="outline" onClick={() => { setStatus("idle"); setScanId(null); }} className="font-mono">Upload Another</Button>
               </div>
             </motion.div>
           )}
