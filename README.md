@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# Welcome to your AuthGuard project
 
 TODO: Document your project here
