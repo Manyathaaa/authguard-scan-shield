@@ -1,10 +1,11 @@
-import { useState } from "react";
+import React, { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileJson, CheckCircle2, Loader2, Globe, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { createScan, updateScan } from "@/lib/scanService";
+import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
 const mockEndpoints = [
@@ -24,31 +25,61 @@ export default function UploadApi() {
   const navigate = useNavigate();
 
   const handleUpload = async (type: string) => {
+    // Deprecated simulated upload path retained as fallback.
     setFileType(type);
-    setStatus("uploading");
+    // Trigger file picker instead of directly uploading simulated data
+    if (fileInputRef.current) {
+      // Set accept attribute based on selected type
+      fileInputRef.current.accept = type.includes("Swagger") ? ".yaml,.yml,.json" : ".json";
+      fileInputRef.current.click();
+    }
+  };
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setStatus("uploading");
     try {
-      const apiType = type.includes("Swagger") ? "swagger" : "postman";
-      const scan = await createScan("api.example.com", apiType, user!.id);
+      const apiType = fileType.includes("Swagger") ? "swagger" : "postman";
+      // Create a scan entry first
+      const scan = await createScan("file-upload", apiType, user!.id);
       setScanId(scan.id);
 
-      // Simulate analysis
-      setTimeout(async () => {
-        await updateScan(scan.id, {
-          endpoints_detected: mockEndpoints,
-          status: "pending",
-        });
-        setStatus("done");
-      }, 2500);
+      // Upload the file to Supabase storage (bucket: "specs"). Ensure this bucket exists in your Supabase project.
+      const filePath = `${user!.id}/${scan.id}/${file.name}`;
+      const { error: uploadError } = await supabase.storage.from("specs").upload(filePath, file, { upsert: true });
+      if (uploadError) throw uploadError;
+
+      // Optionally, set the scan as pending and attach detected endpoints (here we still use mockEndpoints for demo)
+      await updateScan(scan.id, {
+        endpoints_detected: mockEndpoints,
+        status: "pending",
+      });
+
+      // Simulate analysis time for the UI
+      setTimeout(() => setStatus("done"), 500);
     } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Upload Error", description: err.message || String(err), variant: "destructive" });
       setStatus("idle");
+    } finally {
+      // clear input value so same file can be re-selected if needed
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
   return (
     <div className="min-h-screen pt-24 pb-16">
       <div className="container mx-auto px-4 max-w-4xl">
+        {/* Hidden file input used to pick spec files for upload */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleFileChange}
+        />
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-3xl font-bold mb-2">Upload API Specification</h1>
           <p className="text-muted-foreground mb-10">
