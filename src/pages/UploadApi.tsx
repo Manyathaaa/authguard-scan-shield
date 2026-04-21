@@ -8,6 +8,8 @@ import { createScan, updateScan } from "@/lib/scanService";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
+const SPEC_BUCKET = (import.meta.env.VITE_SPEC_BUCKET as string) || "specs";
+
 const mockEndpoints = [
   { method: "POST", path: "/api/auth/login", type: "Login" },
   { method: "POST", path: "/api/auth/register", type: "Registration" },
@@ -29,8 +31,9 @@ export default function UploadApi() {
     setFileType(type);
     // Trigger file picker instead of directly uploading simulated data
     if (fileInputRef.current) {
-      // Set accept attribute based on selected type
-      fileInputRef.current.accept = type.includes("Swagger") ? ".yaml,.yml,.json" : ".json";
+      // Allow any file type and multiple selection
+      fileInputRef.current.accept = "*/*";
+      fileInputRef.current.multiple = true;
       fileInputRef.current.click();
     }
   };
@@ -38,36 +41,62 @@ export default function UploadApi() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
     setStatus("uploading");
-    try {
-      const apiType = fileType.includes("Swagger") ? "swagger" : "postman";
-      // Create a scan entry first
-      const scan = await createScan("file-upload", apiType, user!.id);
-      setScanId(scan.id);
+    let successCount = 0;
+    let failCount = 0;
+    const firstScanIds: string[] = [];
 
-      // Upload the file to Supabase storage (bucket: "specs"). Ensure this bucket exists in your Supabase project.
-      const filePath = `${user!.id}/${scan.id}/${file.name}`;
-      const { error: uploadError } = await supabase.storage.from("specs").upload(filePath, file, { upsert: true });
-      if (uploadError) throw uploadError;
+    for (const file of files) {
+      try {
+        const apiType = fileType.includes("Swagger") ? "swagger" : "postman";
+        // Create a scan entry for each file
+        const scan = await createScan("file-upload", apiType, user!.id);
+        if (!scan?.id) throw new Error("Failed to create scan record");
+        firstScanIds.push(scan.id);
 
-      // Optionally, set the scan as pending and attach detected endpoints (here we still use mockEndpoints for demo)
-      await updateScan(scan.id, {
-        endpoints_detected: mockEndpoints,
-        status: "pending",
-      });
+        // Upload the file to Supabase storage. Bucket is configurable via VITE_SPEC_BUCKET
+        const filePath = `${user!.id}/${scan.id}/${file.name}`;
+        const { error: uploadError } = await supabase.storage.from(SPEC_BUCKET).upload(filePath, file, { upsert: true });
+        if (uploadError) throw uploadError;
 
-      // Simulate analysis time for the UI
-      setTimeout(() => setStatus("done"), 500);
-    } catch (err: any) {
-      toast({ title: "Upload Error", description: err.message || String(err), variant: "destructive" });
-      setStatus("idle");
-    } finally {
-      // clear input value so same file can be re-selected if needed
-      if (fileInputRef.current) fileInputRef.current.value = "";
+        // Update scan metadata (still using mockEndpoints for demo purposes)
+        await updateScan(scan.id, {
+          endpoints_detected: mockEndpoints,
+          status: "pending",
+        });
+
+        successCount++;
+      } catch (err: any) {
+        failCount++;
+        const msg = err?.message || String(err);
+        // Provide a clearer message when the bucket is missing
+        if (msg.toLowerCase().includes("bucket not found")) {
+          toast({
+            title: "Upload Error — Bucket not found",
+            description: `The storage bucket \"${SPEC_BUCKET}\" was not found. Create it in your Supabase dashboard or set VITE_SPEC_BUCKET to an existing bucket.`,
+            variant: "destructive",
+          });
+        } else {
+          toast({ title: "Upload Error", description: msg, variant: "destructive" });
+        }
+      }
     }
+
+    // finalize UI state
+    if (successCount > 0) {
+      setScanId(firstScanIds[0] ?? null);
+      // small delay so progress bar can show
+      setTimeout(() => setStatus("done"), 400);
+      toast({ title: "Upload Complete", description: `${successCount} file(s) uploaded${failCount ? `, ${failCount} failed` : ''}.`, variant: "default" });
+    } else {
+      setStatus("idle");
+    }
+
+    // clear input so same files can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
