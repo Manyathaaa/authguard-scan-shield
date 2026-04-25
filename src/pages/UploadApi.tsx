@@ -111,6 +111,10 @@ export default function UploadApi() {
           className="hidden"
           onChange={handleFileChange}
         />
+        {/* Visible fallback button so users can explicitly select files */}
+        <div className="mb-4">
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()}>Select files to upload</Button>
+        </div>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-3xl font-bold mb-2">Upload API Specification</h1>
           <p className="text-muted-foreground mb-10">
@@ -128,7 +132,14 @@ export default function UploadApi() {
                   const resp = await fetch('/api/scan-github', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoUrl: githubUrl }) });
                   const data = await resp.json();
                   if (!resp.ok) throw new Error(data.error || 'Scan failed');
-                  setRepoFindings(data.findings || []);
+                  // Client-side filter: remove overly generic matches like single-char lines
+                  const filtered = (data.findings || []).filter((f: any) => {
+                    if (!f || !f.snippet) return false;
+                    // drop snippets that are too short or clearly noise
+                    if (f.snippet.length < 6) return false;
+                    return true;
+                  });
+                  setRepoFindings(filtered);
                 } catch (e: any) {
                   toast({ title: 'Scan error', description: e.message || String(e), variant: 'destructive' });
                 }

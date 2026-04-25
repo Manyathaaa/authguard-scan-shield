@@ -2,8 +2,26 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+function normalizeSupabaseUrl(url: string | undefined) {
+  const trimmedUrl = url?.trim();
+
+  if (!trimmedUrl) {
+    throw new Error('Missing VITE_SUPABASE_URL. Add it to .env and restart the Vite dev server.');
+  }
+
+  if (!/^https:\/\/.+\.supabase\.co\/?$/.test(trimmedUrl)) {
+    throw new Error(
+      `Invalid VITE_SUPABASE_URL: "${trimmedUrl}". Expected format: https://your-project-ref.supabase.co`
+    );
+  }
+
+  return trimmedUrl.replace(/\/+$/, '');
+}
+
+const SUPABASE_URL = normalizeSupabaseUrl(rawSupabaseUrl);
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";

@@ -22,6 +22,23 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
+      {/* Dev-only Supabase env warning banner */}
+      {import.meta.env.DEV && (() => {
+        const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+        const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
+        const badUrl = !url || !/^https:\/\/.+\.supabase\.co\/?$/.test(url);
+        const missingKey = !key || key.length < 10;
+        if (badUrl || missingKey) {
+          return (
+            <div style={{background: '#fef3c7', color: '#92400e', padding: '8px 12px', textAlign: 'center'}}>
+              <strong>Dev warning:</strong> Supabase env looks misconfigured.
+              {badUrl && <span> Check <code>VITE_SUPABASE_URL</code>. </span>}
+              {missingKey && <span> Missing or short <code>VITE_SUPABASE_PUBLISHABLE_KEY</code>. </span>}
+            </div>
+          );
+        }
+        return null;
+      })()}
       <BrowserRouter>
         <AuthProvider>
           <Navbar />

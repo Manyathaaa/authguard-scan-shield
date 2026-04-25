@@ -48,7 +48,7 @@ app.post('/api/scan-github', async (req, res) => {
       await git.clone(repoUrl, dir, ['--depth', '1']);
 
       const files = walkDir(dir);
-      const findings = [];
+  const findings = [];
 
       // Only scan text files of common types
       const textExts = ['.js', '.ts', '.jsx', '.tsx', '.py', '.go', '.java', '.rb', '.php', '.json', '.yaml', '.yml', '.env', '.sh', '.cfg', '.ini'];
@@ -67,12 +67,16 @@ app.post('/api/scan-github', async (req, res) => {
           const line = lines[i];
           for (const p of PATTERNS) {
             if (p.regex.test(line)) {
+              // include one line of context before and after when possible
+              const before = lines[Math.max(0, i - 1)] || '';
+              const after = lines[i + 1] || '';
               findings.push({
                 id: p.id,
                 name: p.name,
                 file: path.relative(dir, filePath),
                 line: i + 1,
                 snippet: line.trim(),
+                context: `${before.trim()}\n${line.trim()}\n${after.trim()}`.trim(),
                 severity: p.severity,
                 recommendation: p.recommendation,
               });
@@ -81,8 +85,27 @@ app.post('/api/scan-github', async (req, res) => {
         }
       }
 
+      // Deduplicate similar findings (same id + file + snippet)
+      const unique = [];
+      const seen = new Map();
+      for (const f of findings) {
+        const key = `${f.id}::${f.file}::${f.snippet}`;
+        if (seen.has(key)) {
+          seen.get(key).count++;
+        } else {
+          const copy = Object.assign({}, f);
+          copy.count = 1;
+          seen.set(key, copy);
+          unique.push(copy);
+        }
+      }
+
+      // sort by severity first (high -> medium -> low) then by file
+      const sevOrder = { high: 0, medium: 1, low: 2 };
+      unique.sort((a, b) => (sevOrder[a.severity] - sevOrder[b.severity]) || a.file.localeCompare(b.file) || a.line - b.line);
+
       cleanup();
-      return res.json({ findings });
+      return res.json({ findings: unique });
     } catch (e) {
       cleanup();
       return res.status(500).json({ error: e.message });

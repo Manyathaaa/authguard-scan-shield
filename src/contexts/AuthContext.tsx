@@ -13,6 +13,20 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function mapAuthError(error: unknown) {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return new Error(
+      "Cannot reach Supabase. Check VITE_SUPABASE_URL, make sure the project is active, confirm your internet/DNS connection, and restart the Vite dev server after editing .env."
+    );
+  }
+
+  if (error instanceof Error) {
+    return error;
+  }
+
+  return new Error("Authentication failed. Please try again.");
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -35,20 +49,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUp = async (email: string, password: string, displayName?: string) => {
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { display_name: displayName },
-        emailRedirectTo: window.location.origin,
-      },
-    });
-    if (error) throw error;
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { display_name: displayName },
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
+    } catch (error) {
+      throw mapAuthError(error);
+    }
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+    } catch (error) {
+      throw mapAuthError(error);
+    }
   };
 
   const signOut = async () => {
