@@ -15,3 +15,11 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABL
     autoRefreshToken: true,
   }
 });
+
+// Debug: print env values in development to help diagnose network issues (will appear in browser console)
+if (import.meta.env.DEV) {
+  // eslint-disable-next-line no-console
+  console.log('DEBUG_SUPABASE_URL=', SUPABASE_URL);
+  // eslint-disable-next-line no-console
+  console.log('DEBUG_SUPABASE_KEY=', SUPABASE_PUBLISHABLE_KEY ? 'present' : 'missing');
+}
