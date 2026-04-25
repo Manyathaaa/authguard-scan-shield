@@ -25,6 +25,8 @@ export default function UploadApi() {
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [githubUrl, setGithubUrl] = useState("");
+  const [repoFindings, setRepoFindings] = useState<any[] | null>(null);
 
   const handleUpload = async (type: string) => {
     // Deprecated simulated upload path retained as fallback.
@@ -114,6 +116,43 @@ export default function UploadApi() {
           <p className="text-muted-foreground mb-10">
             Upload your Swagger or Postman Collection to discover authentication endpoints.
           </p>
+
+          <div className="mb-8">
+            <h3 className="text-sm font-medium mb-2">Or scan a public GitHub repository</h3>
+            <div className="flex gap-2">
+              <input value={githubUrl} onChange={(e) => setGithubUrl(e.target.value)} placeholder="https://github.com/user/repo.git" className="flex-1 rounded border border-border px-3 py-2 bg-card" />
+              <Button onClick={async () => {
+                if (!githubUrl) return;
+                setRepoFindings(null);
+                try {
+                  const resp = await fetch('/api/scan-github', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoUrl: githubUrl }) });
+                  const data = await resp.json();
+                  if (!resp.ok) throw new Error(data.error || 'Scan failed');
+                  setRepoFindings(data.findings || []);
+                } catch (e: any) {
+                  toast({ title: 'Scan error', description: e.message || String(e), variant: 'destructive' });
+                }
+              }} className="glow-green">Scan</Button>
+            </div>
+
+            {repoFindings && (
+              <div className="mt-4 space-y-2">
+                <h4 className="text-sm font-medium">Findings</h4>
+                {repoFindings.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No issues found.</p>
+                ) : (
+                  repoFindings.map((f: any, i: number) => (
+                    <div key={`${f.file}-${f.line}-${i}`} className="p-3 rounded border bg-card">
+                      <div className="text-xs font-mono text-muted-foreground">{f.file}:{f.line}</div>
+                      <div className="font-semibold">{f.name} — <span className="text-xs text-muted-foreground">{f.severity}</span></div>
+                      <div className="text-sm mt-1">{f.snippet}</div>
+                      <div className="text-xs text-muted-foreground mt-2">{f.recommendation}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </motion.div>
 
         {status === "idle" && (
