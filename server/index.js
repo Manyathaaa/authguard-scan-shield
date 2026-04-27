@@ -138,16 +138,38 @@ function walkDir(dir, fileList = []) {
   return fileList;
 }
 
+function normalizeRepoUrl(repoUrl) {
+  const trimmed = String(repoUrl || '').trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const url = new URL(trimmed);
+    const isKnownHost = ['github.com', 'gitlab.com', 'bitbucket.org'].includes(url.hostname.toLowerCase());
+
+    if (!isKnownHost) {
+      return trimmed.replace(/#.*$/, '');
+    }
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return trimmed.replace(/#.*$/, '');
+    }
+
+    // Keep only owner/repo so pasted web URLs like /tree/main or /issues/1 can still clone.
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, '');
+    return `${url.protocol}//${url.hostname}/${owner}/${repo}`;
+  } catch (err) {
+    return trimmed.replace(/#.*$/, '');
+  }
+}
+
 app.post('/api/scan-github', async (req, res) => {
   const { repoUrl } = req.body || {};
   if (!repoUrl) return res.status(400).json({ error: 'repoUrl is required' });
 
-  // normalize repoUrl: accept github/gitlab/bitbucket web URLs and archive urls
-  let cloneUrl = repoUrl.trim();
-  // convert common web urls to .git when appropriate
-  if (/^https?:\/\/github\.com\/.+/i.test(cloneUrl) && !cloneUrl.endsWith('.git')) cloneUrl = cloneUrl.replace(/#.*$/, '') + '.git';
-  if (/^https?:\/\/gitlab\.com\/.+/i.test(cloneUrl) && !cloneUrl.endsWith('.git')) cloneUrl = cloneUrl.replace(/#.*$/, '') + '.git';
-  if (/^https?:\/\/bitbucket\.org\/.+/i.test(cloneUrl) && !cloneUrl.endsWith('.git')) cloneUrl = cloneUrl.replace(/#.*$/, '') + '.git';
+  // Normalize common Git hosting URLs, but keep HTTPS repo URLs cloneable without forcing ".git".
+  let cloneUrl = normalizeRepoUrl(repoUrl);
 
   // create temp dir
   tmp.dir({ unsafeCleanup: true }, async (err, dir, cleanup) => {
@@ -250,6 +272,12 @@ app.post('/api/scan-github', async (req, res) => {
       return res.json({ findings: deduped });
     } catch (e) {
       cleanup();
+      const message = String(e && e.message ? e.message : e);
+      if (/repository .* not found|remote: repository not found/i.test(message)) {
+        return res.status(404).json({
+          error: `Repository not found for "${repoUrl}". If the repo was renamed, paste its current URL from the browser address bar.`,
+        });
+      }
       return res.status(500).json({ error: e.message });
     }
   });
