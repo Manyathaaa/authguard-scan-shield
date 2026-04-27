@@ -5,7 +5,7 @@ import { Play, CheckCircle2, XCircle, Loader2, ArrowRight, Shield } from "lucide
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { createScan, updateScan, insertVulnerabilities } from "@/lib/scanService";
+import { createScan, updateScan, insertVulnerabilities, getFriendlyScanErrorMessage, isMissingSchemaError } from "@/lib/scanService";
 import { useToast } from "@/hooks/use-toast";
 
 interface TestModule {
@@ -37,6 +37,7 @@ export default function Scanner() {
   const [scanning, setScanning] = useState(false);
   const [complete, setComplete] = useState(false);
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
+  const [localReport, setLocalReport] = useState<{ scan: any; vulnerabilities: any[] } | null>(null);
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -46,16 +47,31 @@ export default function Scanner() {
   const runScan = async () => {
     setScanning(true);
     setComplete(false);
+    setLocalReport(null);
     setModules(initialModules.map((m) => ({ ...m, status: "idle" })));
 
     try {
       let scanId = passedScanId;
+      let persistToSupabase = true;
       if (!scanId) {
-        const scan = await createScan("api.example.com", "swagger", user!.id);
-        scanId = scan.id;
+        try {
+          const scan = await createScan("api.example.com", "swagger", user!.id);
+          scanId = scan.id;
+        } catch (err) {
+          if (!isMissingSchemaError(err)) throw err;
+          persistToSupabase = false;
+          toast({
+            title: "Running without database persistence",
+            description: "The Supabase scans tables are missing, so this scan will run locally and won’t be saved to the dashboard yet.",
+            variant: "destructive",
+          });
+        }
       }
-      setActiveScanId(scanId);
-      await updateScan(scanId, { status: "running" });
+      setActiveScanId(scanId ?? null);
+
+      if (scanId && persistToSupabase) {
+        await updateScan(scanId, { status: "running" });
+      }
 
       initialModules.forEach((mod, i) => {
         setTimeout(() => {
@@ -77,12 +93,55 @@ export default function Scanner() {
               passed: val.status === "pass",
             }));
 
-            insertVulnerabilities(scanId, vulns).then(() => {
-              const highCount = vulns.filter((v) => v.risk_level === "high").length;
-              const medCount = vulns.filter((v) => v.risk_level === "medium").length;
-              const score = Math.max(0, 100 - highCount * 20 - medCount * 10);
-              updateScan(scanId, { status: "completed", security_score: score });
-            });
+            const highCount = vulns.filter((v) => v.risk_level === "high").length;
+            const medCount = vulns.filter((v) => v.risk_level === "medium").length;
+            const score = Math.max(0, 100 - highCount * 20 - medCount * 10);
+
+            if (scanId && persistToSupabase) {
+              insertVulnerabilities(scanId, vulns).then(() => {
+                updateScan(scanId, { status: "completed", security_score: score });
+              }).catch((err) => {
+                if (isMissingSchemaError(err)) {
+                  setLocalReport({
+                    scan: {
+                      id: `local-${Date.now()}`,
+                      target_url: "api.example.com",
+                      api_type: "swagger",
+                      status: "completed",
+                      security_score: score,
+                      created_at: new Date().toISOString(),
+                    },
+                    vulnerabilities: vulns.map((v, index) => ({
+                      ...v,
+                      id: `local-vuln-${index + 1}`,
+                    })),
+                  });
+                  toast({
+                    title: "Scan complete",
+                    description: "Results are available locally, but they were not saved because the Supabase tables are missing.",
+                    variant: "destructive",
+                  });
+                  return;
+                }
+
+                toast({ title: "Error", description: getFriendlyScanErrorMessage(err), variant: "destructive" });
+              });
+            } else {
+              setLocalReport({
+                scan: {
+                  id: `local-${Date.now()}`,
+                  target_url: "api.example.com",
+                  api_type: "swagger",
+                  status: "completed",
+                  security_score: score,
+                  created_at: new Date().toISOString(),
+                },
+                vulnerabilities: vulns.map((v, index) => ({
+                  ...v,
+                  id: `local-vuln-${index + 1}`,
+                })),
+              });
+            }
 
             setScanning(false);
             setComplete(true);
@@ -90,7 +149,7 @@ export default function Scanner() {
         }, i * 1200 + 1000);
       });
     } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Error", description: getFriendlyScanErrorMessage(err), variant: "destructive" });
       setScanning(false);
     }
   };
@@ -138,7 +197,7 @@ export default function Scanner() {
 
         {complete && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-8">
-            <Button onClick={() => navigate("/report", { state: { scanId: activeScanId } })} className="glow-green font-mono">
+            <Button onClick={() => navigate("/report", { state: localReport ? localReport : { scanId: activeScanId } })} className="glow-green font-mono">
               View Report <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </motion.div>

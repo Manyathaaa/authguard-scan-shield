@@ -12,6 +12,8 @@ export default function Report() {
   const { user } = useAuth();
   const location = useLocation();
   const passedScanId = (location.state as any)?.scanId;
+  const passedScan = (location.state as any)?.scan;
+  const passedVulnerabilities = (location.state as any)?.vulnerabilities;
   const [loading, setLoading] = useState(true);
   const [scan, setScan] = useState<any>(null);
   const [vulnerabilities, setVulnerabilities] = useState<any[]>([]);
@@ -20,7 +22,10 @@ export default function Report() {
     async function load() {
       setLoading(true);
       try {
-        if (passedScanId) {
+        if (passedScan && passedVulnerabilities) {
+          setScan(passedScan);
+          setVulnerabilities(passedVulnerabilities);
+        } else if (passedScanId) {
           const { data: scanData } = await supabase.from("scans").select("*").eq("id", passedScanId).single();
           const vulns = await getScanVulnerabilities(passedScanId);
           setScan(scanData);
@@ -38,7 +43,7 @@ export default function Report() {
       setLoading(false);
     }
     load();
-  }, [user, passedScanId]);
+  }, [user, passedScanId, passedScan, passedVulnerabilities]);
 
   if (loading) {
     return (

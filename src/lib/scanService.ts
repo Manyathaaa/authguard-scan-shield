@@ -21,6 +21,28 @@ export interface VulnerabilityData {
   passed: boolean;
 }
 
+export function isMissingSchemaError(error: unknown) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String((error as { message?: unknown }).message)
+        : String(error ?? "");
+
+  return (
+    message.includes("Could not find the table 'public.scans'") ||
+    message.includes("Could not find the table 'public.vulnerabilities'")
+  );
+}
+
+export function getFriendlyScanErrorMessage(error: unknown) {
+  if (isMissingSchemaError(error)) {
+    return "Supabase tables are missing for this project. Run the migration in Supabase SQL Editor or apply the files under supabase/migrations.";
+  }
+
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function createScan(targetUrl: string, apiType: string, userId: string) {
   const { data, error } = await supabase
     .from("scans")
