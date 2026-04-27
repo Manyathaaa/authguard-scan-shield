@@ -27,6 +27,7 @@ export default function UploadApi() {
   const navigate = useNavigate();
   const [githubUrl, setGithubUrl] = useState("");
   const [repoFindings, setRepoFindings] = useState<any[] | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const handleUpload = async (type: string) => {
     // Deprecated simulated upload path retained as fallback.
@@ -42,10 +43,10 @@ export default function UploadApi() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+  const processFiles = async (files: File[]) => {
+    if (!files || files.length === 0) return;
 
+    setSelectedFiles(files);
     setStatus("uploading");
     let successCount = 0;
     let failCount = 0;
@@ -53,24 +54,18 @@ export default function UploadApi() {
 
     for (const file of files) {
       try {
-        const apiType = fileType.includes("Swagger") ? "swagger" : "postman";
-        // Create a scan entry for each file
-        const scan = await createScan("file-upload", apiType, user!.id);
-        if (!scan?.id) throw new Error("Failed to create scan record");
-        firstScanIds.push(scan.id);
-
-        // Upload the file to Supabase storage. Bucket is configurable via VITE_SPEC_BUCKET
-        const filePath = `${user!.id}/${scan.id}/${file.name}`;
-        const { error: uploadError } = await supabase.storage.from(SPEC_BUCKET).upload(filePath, file, { upsert: true });
-        if (uploadError) throw uploadError;
-
-        // Update scan metadata (still using mockEndpoints for demo purposes)
-        await updateScan(scan.id, {
-          endpoints_detected: mockEndpoints,
-          status: "pending",
-        });
-
-        successCount++;
+          const apiType = fileType.includes("Swagger") ? "swagger" : "postman";
+          // Read file contents and POST to server /api/upload for scanning
+          const text = await file.text();
+          const base64 = btoa(unescape(encodeURIComponent(text)));
+          const resp = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, content: base64 }], apiType }) });
+          const data = await resp.json();
+          if (!resp.ok) throw new Error(data.error || 'Upload scan failed');
+          // If there are findings, show them in repoFindings area
+          if (data.findings && data.findings.length > 0) {
+            setRepoFindings(data.findings);
+          }
+          successCount++;
       } catch (err: any) {
         failCount++;
         const msg = err?.message || String(err);
@@ -89,17 +84,30 @@ export default function UploadApi() {
 
     // finalize UI state
     if (successCount > 0) {
-      setScanId(firstScanIds[0] ?? null);
+      setScanId(null);
       // small delay so progress bar can show
       setTimeout(() => setStatus("done"), 400);
       toast({ title: "Upload Complete", description: `${successCount} file(s) uploaded${failCount ? `, ${failCount} failed` : ''}.`, variant: "default" });
     } else {
       setStatus("idle");
     }
-
     // clear input so same files can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = "";
+    // clear selected files after done
+    setTimeout(() => setSelectedFiles([]), 2000);
   };
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    processFiles(files);
+  };
+
+  const handleDrop = (ev: React.DragEvent<HTMLDivElement>) => {
+    ev.preventDefault();
+    const items = Array.from(ev.dataTransfer.files || []);
+    if (items.length) processFiles(items);
+  };
+
+  const handleDragOver = (ev: React.DragEvent<HTMLDivElement>) => ev.preventDefault();
 
   return (
     <div className="min-h-screen pt-24 pb-16">
@@ -111,9 +119,28 @@ export default function UploadApi() {
           className="hidden"
           onChange={handleFileChange}
         />
-        {/* Visible fallback button so users can explicitly select files */}
-        <div className="mb-4">
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()}>Select files to upload</Button>
+        {/* Note: file selection is handled by the drag/drop area below */}
+        {/* Drag and drop area */}
+        <div className="mb-6">
+          <div onDrop={handleDrop} onDragOver={handleDragOver} onClick={() => fileInputRef.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') fileInputRef.current?.click(); }} className="rounded-md border-2 border-dashed border-border p-6 text-center bg-card">
+            <div className="flex items-center justify-center gap-3">
+              <Upload className="h-6 w-6 text-primary" />
+              <div>
+                <div className="font-semibold">Drag & drop files here</div>
+                <div className="text-sm text-muted-foreground">or click to select files</div>
+              </div>
+            </div>
+            {selectedFiles.length > 0 && (
+              <div className="mt-4 text-left">
+                <div className="text-sm font-medium mb-2">Selected files</div>
+                <ul className="space-y-1">
+                  {selectedFiles.map((f) => (
+                    <li key={f.name} className="text-sm text-muted-foreground">{f.name} · {Math.round(f.size/1024)} KB</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         </div>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-3xl font-bold mb-2">Upload API Specification</h1>
