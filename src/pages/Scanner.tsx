@@ -32,6 +32,26 @@ const mockResults: Record<string, { status: "pass" | "fail" | "warn"; details: s
   lockout: { status: "pass", details: "Account locked after 10 failed attempts. Unlock after 15 min.", riskLevel: "low", recommendation: "Lockout policy is solid. Consider notifying users via email on lockout events." },
 };
 
+function computeScore(vulns: { risk_level: string }[]) {
+  // Configurable weights per severity
+  const weights: Record<string, number> = {
+    high: 25, // more impact than before
+    medium: 10,
+    low: 5,
+  };
+
+  const counts = { high: 0, medium: 0, low: 0 };
+  for (const v of vulns) {
+    const lvl = (v.risk_level || "").toLowerCase();
+    if (lvl === "high") counts.high += 1;
+    else if (lvl === "medium") counts.medium += 1;
+    else if (lvl === "low") counts.low += 1;
+  }
+
+  const raw = 100 - (counts.high * weights.high + counts.medium * weights.medium + counts.low * weights.low);
+  return Math.max(0, Math.round(raw));
+}
+
 export default function Scanner() {
   const [modules, setModules] = useState<TestModule[]>(initialModules);
   const [scanning, setScanning] = useState(false);
@@ -93,9 +113,7 @@ export default function Scanner() {
               passed: val.status === "pass",
             }));
 
-            const highCount = vulns.filter((v) => v.risk_level === "high").length;
-            const medCount = vulns.filter((v) => v.risk_level === "medium").length;
-            const score = Math.max(0, 100 - highCount * 20 - medCount * 10);
+            const score = computeScore(vulns as any[]);
 
             if (scanId && persistToSupabase) {
               insertVulnerabilities(scanId, vulns).then(() => {
