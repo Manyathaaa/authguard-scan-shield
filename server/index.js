@@ -13,7 +13,8 @@ app.use(bodyParser.json({ limit: '10mb' }));
 
 // Lightweight static checks (pattern-based) for authentication-related issues
 const PATTERNS = [
-  { id: 'hardcoded-secret', name: 'Hard-coded secret', regex: /(api_key|secret|password|passwd|token)\s*[:=]\s*["'`][^"'`]{6,}/i, severity: 'high', recommendation: 'Remove secrets from source; use environment variables or secrets manager.' },
+  // tighten hardcoded-secret: do not match when the value is an env var reference like ${VAR} or $VAR
+  { id: 'hardcoded-secret', name: 'Hard-coded secret', regex: /(api_key|secret|password|passwd|token)\s*[:=]\s*["'`](?!\s*\$|\s*\$\{)[^"'`]{6,}/i, severity: 'high', recommendation: 'Remove secrets from source; use environment variables or secrets manager.' },
   { id: 'jwt-secret-env', name: 'JWT secret in code', regex: /JWT_SECRET|jwt_secret|process\.env\.JWT/i, severity: 'high', recommendation: 'Ensure JWT secrets are not committed and use env vars or secret store.' },
   { id: 'weak-password-check', name: 'Weak password policy', regex: /(min.?length.?=.?[0-6]|minimum.?length.?=.?[0-6]|minLength.?[:=]\s*\d)/i, severity: 'medium', recommendation: 'Enforce stronger minimum length (12+) and complexity.' },
   { id: 'allow-all-cors', name: 'Allow all CORS', regex: /access-control-allow-origin\s*[:=]\s*["']?\*/i, severity: 'medium', recommendation: 'Restrict CORS origins to trusted domains.' },
@@ -25,10 +26,20 @@ function walkDir(dir, fileList = []) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      // skip node_modules and .git
-      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      // skip node_modules, .git and common test/vendor/build directories
+      const skipDirs = ['node_modules', '.git', 'test', 'tests', 'vendor', 'dist', 'build', 'out'];
+      if (skipDirs.includes(entry.name)) continue;
       walkDir(full, fileList);
     } else if (entry.isFile()) {
+      // skip test files by filename pattern (e.g., *_test.go)
+      if (/_test\./i.test(entry.name)) continue;
+      // skip minified or generated files
+      const skipExts = ['.min.js', '.min.css'];
+      const lower = entry.name.toLowerCase();
+      if (skipExts.some(s => lower.endsWith(s))) continue;
+      // skip very large/binary files by extension
+      const binarySkip = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.exe', '.dll', '.so', '.dylib', '.bin'];
+      if (binarySkip.includes(path.extname(entry.name).toLowerCase())) continue;
       fileList.push(full);
     }
   }
@@ -65,23 +76,32 @@ app.post('/api/scan-github', async (req, res) => {
         const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          for (const p of PATTERNS) {
-            if (p.regex.test(line)) {
-              // include one line of context before and after when possible
-              const before = lines[Math.max(0, i - 1)] || '';
-              const after = lines[i + 1] || '';
-              findings.push({
-                id: p.id,
-                name: p.name,
-                file: path.relative(dir, filePath),
-                line: i + 1,
-                snippet: line.trim(),
-                context: `${before.trim()}\n${line.trim()}\n${after.trim()}`.trim(),
-                severity: p.severity,
-                recommendation: p.recommendation,
-              });
-            }
-          }
+              for (const p of PATTERNS) {
+                if (p.regex.test(line)) {
+              // Skip low-confidence matches that are clearly test/example placeholders
+              if (/test[-_]|example|dummy|sample/i.test(line)) continue;
+              // If the matched value is an env-var reference (e.g. "${FOO}" or "$FOO"), skip it as it's not a hard-coded secret
+                  const valueMatch = line.match(/[:=]\s*["'`](.*?)["'`]$/);
+                  if (valueMatch && /\$\{|\$[A-Za-z_]/.test(valueMatch[1])) {
+                    // skip noisy env-var interpolation
+                    continue;
+                  }
+
+                  // include one line of context before and after when possible
+                  const before = lines[Math.max(0, i - 1)] || '';
+                  const after = lines[i + 1] || '';
+                  findings.push({
+                    id: p.id,
+                    name: p.name,
+                    file: path.relative(dir, filePath),
+                    line: i + 1,
+                    snippet: line.trim(),
+                    context: `${before.trim()}\n${line.trim()}\n${after.trim()}`.trim(),
+                    severity: p.severity,
+                    recommendation: p.recommendation,
+                  });
+                }
+              }
         }
       }
 
