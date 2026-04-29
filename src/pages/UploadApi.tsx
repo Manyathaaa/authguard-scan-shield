@@ -1,4 +1,6 @@
 import React, { useState, useRef } from "react";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable no-useless-escape */
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileJson, CheckCircle2, Loader2, Globe, ArrowRight, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,7 +32,8 @@ function extractJsonObjectFromText(text: string) {
   const candidate = text.slice(start, end + 1);
   try {
     return JSON.parse(candidate);
-  } catch {
+  } catch (e) {
+    // ignore parse errors when attempting to extract a JSON object from arbitrary text
     return null;
   }
 }
@@ -42,7 +45,9 @@ function normalizeEndpointPath(url: string) {
     if (/^https?:\/\//i.test(value)) {
       return new URL(value).pathname || "/";
     }
-  } catch {}
+  } catch (e) {
+    // ignore URL parsing errors for non-absolute strings
+  }
   return value;
 }
 
@@ -116,7 +121,7 @@ function extractEndpointsFromSpec(text: string, apiType: string) {
 
     // Try OpenAPI (JSON or YAML). We'll attempt JSON parse first, then YAML via dynamic import if available.
     let doc: any;
-    try { doc = JSON.parse(text); } catch (e) { }
+    try { doc = JSON.parse(text); } catch (e) { /* ignore JSON parse errors */ }
     if (!doc && looksLikeApiSpec(text, apiType)) {
       doc = extractJsonObjectFromText(text);
     }
