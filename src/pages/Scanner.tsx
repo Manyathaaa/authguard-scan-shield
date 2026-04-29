@@ -31,6 +31,20 @@ const FALLBACK_ENDPOINTS: Endpoint[] = [
 
 const authPriority = [/login/i, /signin/i, /auth/i, /register/i, /signup/i, /password/i, /token/i, /refresh/i, /session/i, /otp/i, /verify/i, /me\b/i, /profile/i];
 
+function endpointRiskProfile(endpoint: Endpoint | null) {
+  const path = (endpoint?.path || "").toLowerCase();
+  const method = (endpoint?.method || "GET").toUpperCase();
+
+  return {
+    isLoginLike: /login|signin|auth|session/.test(path),
+    isRegistrationLike: /register|signup/.test(path),
+    isTokenLike: /token|jwt|refresh|oauth/.test(path),
+    isPasswordLike: /password|reset|forgot|otp|verify/.test(path),
+    isProfileLike: /me\b|profile|account|user/.test(path),
+    isWriteAction: ["POST", "PUT", "PATCH", "DELETE"].includes(method),
+  };
+}
+
 function computeScore(vulns: { risk_level: string }[]) {
   const weights: Record<string, number> = { high: 25, medium: 10, low: 5 };
   const counts = { high: 0, medium: 0, low: 0 };
@@ -70,35 +84,41 @@ function buildModules(endpoints: Endpoint[]) {
 
 function buildMockResults(modules: TestModule[]) {
   const endpointLabel = (ep: Endpoint | null) => ep ? `${ep.method} ${ep.path}` : "the selected endpoint";
+  const rateProfile = endpointRiskProfile(modules.find((m) => m.id === "rate")?.endpoint || null);
+  const passwordProfile = endpointRiskProfile(modules.find((m) => m.id === "password")?.endpoint || null);
+  const bruteProfile = endpointRiskProfile(modules.find((m) => m.id === "brute")?.endpoint || null);
+  const jwtProfile = endpointRiskProfile(modules.find((m) => m.id === "jwt")?.endpoint || null);
+  const lockoutProfile = endpointRiskProfile(modules.find((m) => m.id === "lockout")?.endpoint || null);
+
   return {
     rate: {
-      status: "fail" as const,
+      status: rateProfile.isLoginLike || rateProfile.isTokenLike ? "fail" as const : "warn" as const,
       details: `No rate limiting indicators were detected for ${endpointLabel(modules.find((m) => m.id === "rate")?.endpoint || null)}.`,
-      riskLevel: "high",
+      riskLevel: rateProfile.isLoginLike || rateProfile.isTokenLike ? "high" : "medium",
       recommendation: "Add request throttling per IP or user identity for login and token endpoints.",
     },
     password: {
-      status: "warn" as const,
+      status: passwordProfile.isRegistrationLike || passwordProfile.isPasswordLike ? "warn" as const : "pass" as const,
       details: `Password-related flows near ${endpointLabel(modules.find((m) => m.id === "password")?.endpoint || null)} should enforce stronger complexity and minimum length requirements.`,
-      riskLevel: "medium",
+      riskLevel: passwordProfile.isRegistrationLike || passwordProfile.isPasswordLike ? "medium" : "low",
       recommendation: "Require longer passwords and consistent validation across registration and reset flows.",
     },
     brute: {
-      status: "warn" as const,
+      status: bruteProfile.isLoginLike ? "fail" as const : bruteProfile.isWriteAction ? "warn" as const : "pass" as const,
       details: `Brute-force protections were not clearly visible for ${endpointLabel(modules.find((m) => m.id === "brute")?.endpoint || null)}.`,
-      riskLevel: "medium",
+      riskLevel: bruteProfile.isLoginLike ? "high" : bruteProfile.isWriteAction ? "medium" : "low",
       recommendation: "Add account/IP lockouts, CAPTCHAs, and progressive backoff after repeated failures.",
     },
     jwt: {
-      status: "fail" as const,
+      status: jwtProfile.isTokenLike ? "fail" as const : jwtProfile.isProfileLike ? "warn" as const : "pass" as const,
       details: `Token-oriented route ${endpointLabel(modules.find((m) => m.id === "jwt")?.endpoint || null)} should be reviewed for signing algorithm, expiry, and refresh-token safety.`,
-      riskLevel: "high",
+      riskLevel: jwtProfile.isTokenLike ? "high" : jwtProfile.isProfileLike ? "medium" : "low",
       recommendation: "Use short-lived access tokens, secure refresh rotation, and strong signing keys.",
     },
     lockout: {
-      status: "pass" as const,
+      status: lockoutProfile.isLoginLike ? "warn" as const : "pass" as const,
       details: `Account lockout handling for ${endpointLabel(modules.find((m) => m.id === "lockout")?.endpoint || null)} did not show an obvious red flag in this simulated scan.`,
-      riskLevel: "low",
+      riskLevel: lockoutProfile.isLoginLike ? "medium" : "low",
       recommendation: "Keep audit logging and user notification in place for lockout events.",
     },
   };

@@ -23,6 +23,29 @@ function looksLikeApiSpec(text: string, apiType: string) {
   );
 }
 
+function extractJsonObjectFromText(text: string) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  const candidate = text.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEndpointPath(url: string) {
+  const value = String(url || "").trim();
+  if (!value) return "/";
+  try {
+    if (/^https?:\/\//i.test(value)) {
+      return new URL(value).pathname || "/";
+    }
+  } catch {}
+  return value;
+}
+
 function extractSpecLikeEndpoints(text: string) {
   const endpoints: { method: string; path: string; type: string }[] = [];
   const seen = new Set<string>();
@@ -51,6 +74,16 @@ function extractSpecLikeEndpoints(text: string) {
     addEndpoint(match[2].toUpperCase(), match[1], "heuristic");
   }
 
+  const methodPathRegex = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE)\b\s+(\/[A-Za-z0-9._~\-\/{}:,@]+)/gi;
+  while ((match = methodPathRegex.exec(text)) !== null) {
+    addEndpoint(match[1].toUpperCase(), match[2], "pdf-text");
+  }
+
+  const postmanTextRegex = /"method"\s*:\s*"(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE)"[\s\S]{0,250}?"url"\s*:\s*"(https?:\/\/[^"\s]+|\/[^"\s]+)"/gi;
+  while ((match = postmanTextRegex.exec(text)) !== null) {
+    addEndpoint(match[1].toUpperCase(), normalizeEndpointPath(match[2]), "postman-text");
+  }
+
   return endpoints;
 }
 
@@ -71,7 +104,7 @@ function extractEndpointsFromSpec(text: string, apiType: string) {
               if (typeof it.request.url === 'string') url = it.request.url;
               else if (it.request.url && it.request.url.raw) url = it.request.url.raw;
               else if (it.request.url && it.request.url.path) url = '/' + (Array.isArray(it.request.url.path) ? it.request.url.path.join('/') : String(it.request.url.path));
-              endpoints.push({ method, path: url, type: 'Detected' });
+              endpoints.push({ method, path: normalizeEndpointPath(url), type: 'Detected' });
             }
             if (it.item && Array.isArray(it.item)) walkItems(it.item);
           }
@@ -84,6 +117,9 @@ function extractEndpointsFromSpec(text: string, apiType: string) {
     // Try OpenAPI (JSON or YAML). We'll attempt JSON parse first, then YAML via dynamic import if available.
     let doc: any;
     try { doc = JSON.parse(text); } catch (e) { }
+    if (!doc && looksLikeApiSpec(text, apiType)) {
+      doc = extractJsonObjectFromText(text);
+    }
     if (!doc) {
       // Lightweight YAML parsing for common OpenAPI files (paths/methods)
       // This avoids adding a heavy dependency in the frontend and handles typical YAML structure.

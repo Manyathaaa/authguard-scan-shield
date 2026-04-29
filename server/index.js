@@ -76,6 +76,29 @@ function looksLikeApiSpec(text, apiType) {
   );
 }
 
+function extractJsonObjectFromText(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  const candidate = text.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch (err) {
+    return null;
+  }
+}
+
+function normalizeEndpointPath(url) {
+  const value = String(url || '').trim();
+  if (!value) return '/';
+  try {
+    if (/^https?:\/\//i.test(value)) {
+      return new URL(value).pathname || '/';
+    }
+  } catch (err) {}
+  return value;
+}
+
 function extractSpecLikeEndpoints(text) {
   const endpoints = [];
   const seen = new Set();
@@ -105,6 +128,37 @@ function extractSpecLikeEndpoints(text) {
     addEndpoint(match[2].toUpperCase(), match[1], 'heuristic');
   }
 
+  // PDF/plain-text fallback: handles flattened text like
+  // "/users: get: ... post: ... /login: post: ..."
+  const pathOnlyRegex = /\/[A-Za-z0-9._~\-\/{}]+/g;
+  const validMethods = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'trace']);
+  const pathMatches = [...text.matchAll(pathOnlyRegex)];
+  for (let i = 0; i < pathMatches.length; i++) {
+    const current = pathMatches[i];
+    const pathValue = current[0];
+    const start = current.index || 0;
+    const end = i + 1 < pathMatches.length ? (pathMatches[i + 1].index || text.length) : text.length;
+    const slice = text.slice(start, end);
+    const methodMatches = [...slice.matchAll(/\b(get|post|put|patch|delete|options|head|trace)\b\s*:/gi)];
+    for (const methodMatch of methodMatches) {
+      const method = methodMatch[1].toLowerCase();
+      if (validMethods.has(method)) {
+        addEndpoint(method.toUpperCase(), pathValue, 'pdf-text');
+      }
+    }
+  }
+
+  // Plain text fallback: handles lines like "POST /api/v1/auth/login"
+  const methodPathRegex = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE)\b\s+(\/[A-Za-z0-9._~\-\/{}:,@]+)/gi;
+  while ((match = methodPathRegex.exec(text)) !== null) {
+    addEndpoint(match[1].toUpperCase(), match[2], 'pdf-text');
+  }
+
+    const postmanTextRegex = /"method"\s*:\s*"(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE)"[\s\S]{0,250}?"url"\s*:\s*"(https?:\/\/[^"\s]+|\/[^"\s]+)"/gi;
+  while ((match = postmanTextRegex.exec(text)) !== null) {
+    addEndpoint(match[1].toUpperCase(), normalizeEndpointPath(match[2]), 'postman-text');
+  }
+
   return endpoints;
 }
 
@@ -113,6 +167,9 @@ function extractEndpointsFromText(text, apiType) {
     // Try JSON parse first
     let doc = null;
     try { doc = JSON.parse(text); } catch (e) { doc = null; }
+    if (!doc && looksLikeApiSpec(text, apiType)) {
+      doc = extractJsonObjectFromText(text);
+    }
 
     const endpoints = [];
     if (apiType === 'postman' || (doc && doc.item)) {
@@ -125,7 +182,7 @@ function extractEndpointsFromText(text, apiType) {
             if (typeof it.request.url === 'string') url = it.request.url;
             else if (it.request.url && it.request.url.raw) url = it.request.url.raw;
             else if (it.request.url && it.request.url.path) url = '/' + (Array.isArray(it.request.url.path) ? it.request.url.path.join('/') : String(it.request.url.path));
-            endpoints.push({ method, path: url, type: 'postman' });
+            endpoints.push({ method, path: normalizeEndpointPath(url), type: 'postman' });
           }
           if (it.item && Array.isArray(it.item)) walk(it.item);
         }
