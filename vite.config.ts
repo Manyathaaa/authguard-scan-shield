@@ -3,7 +3,20 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig(async ({ mode }) => {
+  // Dynamically load optional dev-only plugin without leaving Promises in the plugins array
+  let devTagger: any = null;
+  if (mode === 'development') {
+    try {
+      const mod = await import('lovable-tagger');
+      devTagger = mod.componentTagger();
+    } catch (err) {
+      // if the package isn't present, skip the plugin
+      devTagger = null;
+    }
+  }
+
+  return ({
   server: {
     host: "::",
     port: 8080,
@@ -18,17 +31,7 @@ export default defineConfig(({ mode }) => ({
       }
     },
   },
-  plugins: [react(), (async () => {
-    if (mode !== 'development') return null;
-    try {
-      // dynamic import so installs that don't include lovable-tagger won't fail
-      const mod = await import('lovable-tagger');
-      return mod.componentTagger();
-    } catch (err) {
-      // if the package isn't present, skip the plugin
-      return null;
-    }
-  })()].filter(Boolean),
+  plugins: [react(), devTagger].filter(Boolean),
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
