@@ -205,72 +205,191 @@ export default function UploadApi() {
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
           <title>AuthGuard GitHub Findings</title>
           <style>
+            :root {
+              --bg: #090d12;
+              --panel: #141922;
+              --panel-2: #0f141c;
+              --border: #243042;
+              --text: #edf2f7;
+              --muted: #9aa6ba;
+              --green: #32d66b;
+              --green-soft: rgba(50, 214, 107, 0.14);
+              --red: #ff6b6b;
+              --yellow: #f5c451;
+              --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+            }
             body {
               font-family: Arial, sans-serif;
-              margin: 32px;
-              color: #111827;
-              background: #ffffff;
+              margin: 0;
+              padding: 32px;
+              color: var(--text);
+              background:
+                radial-gradient(circle at top right, rgba(50, 214, 107, 0.08), transparent 26%),
+                linear-gradient(180deg, #0b1016 0%, var(--bg) 100%);
+            }
+            .shell {
+              max-width: 980px;
+              margin: 0 auto;
+            }
+            .hero {
+              background: linear-gradient(180deg, rgba(20, 25, 34, 0.98), rgba(15, 20, 28, 0.98));
+              border: 1px solid var(--border);
+              border-radius: 20px;
+              padding: 24px 28px;
+              box-shadow: var(--shadow);
+              margin-bottom: 24px;
+            }
+            .brand {
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
+              color: var(--text);
+              font-size: 14px;
+              letter-spacing: 0.18em;
+              text-transform: uppercase;
+              margin-bottom: 14px;
+            }
+            .brand-mark {
+              width: 12px;
+              height: 12px;
+              border-radius: 999px;
+              background: var(--green);
+              box-shadow: 0 0 20px rgba(50, 214, 107, 0.45);
             }
             h1 {
               margin: 0 0 8px;
-              font-size: 28px;
+              font-size: 30px;
+              letter-spacing: -0.03em;
             }
             .meta {
-              color: #4b5563;
-              margin-bottom: 24px;
+              color: var(--muted);
               font-size: 14px;
+              line-height: 1.7;
+            }
+            .summary {
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
+              margin-top: 16px;
+              padding: 10px 14px;
+              border-radius: 999px;
+              background: var(--green-soft);
+              color: var(--green);
+              font-weight: 700;
             }
             .finding {
-              border: 1px solid #d1d5db;
-              border-radius: 10px;
-              padding: 16px;
+              border: 1px solid var(--border);
+              background: linear-gradient(180deg, rgba(20, 25, 34, 0.95), rgba(15, 20, 28, 0.95));
+              border-radius: 16px;
+              padding: 18px;
               margin-bottom: 16px;
               page-break-inside: avoid;
+              box-shadow: var(--shadow);
             }
             .file {
-              color: #6b7280;
+              color: var(--muted);
               font-family: monospace;
               font-size: 12px;
               margin-bottom: 8px;
             }
+            .title-row {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 12px;
+              margin-bottom: 10px;
+            }
             .title {
               font-size: 18px;
               font-weight: 700;
-              margin-bottom: 8px;
+              margin: 0;
+            }
+            .severity {
+              padding: 6px 10px;
+              border-radius: 999px;
+              font-size: 12px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.08em;
+            }
+            .severity-high {
+              background: rgba(255, 107, 107, 0.14);
+              color: var(--red);
+            }
+            .severity-medium {
+              background: rgba(245, 196, 81, 0.14);
+              color: var(--yellow);
+            }
+            .severity-low {
+              background: var(--green-soft);
+              color: var(--green);
             }
             .snippet {
               font-family: monospace;
-              background: #f3f4f6;
-              padding: 10px;
-              border-radius: 8px;
+              background: rgba(255, 255, 255, 0.04);
+              border: 1px solid rgba(255, 255, 255, 0.06);
+              padding: 12px;
+              border-radius: 10px;
               margin-bottom: 10px;
               white-space: pre-wrap;
               word-break: break-word;
             }
             .recommendation {
-              color: #374151;
+              color: #d2dae6;
               font-size: 14px;
+              line-height: 1.6;
             }
             @media print {
-              body { margin: 20px; }
+              body {
+                padding: 20px;
+                background: #ffffff;
+                color: #111827;
+              }
+              .hero, .finding {
+                box-shadow: none;
+                background: #ffffff;
+                color: #111827;
+              }
+              .meta, .file {
+                color: #4b5563;
+              }
+              .snippet {
+                background: #f3f4f6;
+                border-color: #e5e7eb;
+              }
+              .recommendation {
+                color: #374151;
+              }
             }
           </style>
         </head>
         <body>
-          <h1>AuthGuard GitHub Findings</h1>
-          <div class="meta">
-            Repository: ${escapeHtml(githubUrl || "GitHub repository")}<br />
-            Generated: ${escapeHtml(new Date().toLocaleString())}<br />
-            Findings: ${repoFindings.length}
-          </div>
-          ${repoFindings.map((finding: any) => `
-            <section class="finding">
-              <div class="file">${escapeHtml(`${finding.file || "unknown"}:${finding.line || "-"}`)}</div>
-              <div class="title">${escapeHtml(finding.name || "Finding")} - ${escapeHtml(finding.severity || "unknown")}</div>
-              <div class="snippet">${escapeHtml(finding.snippet || "")}</div>
-              <div class="recommendation">${escapeHtml(finding.recommendation || "")}</div>
+          <div class="shell">
+            <section class="hero">
+              <div class="brand"><span class="brand-mark"></span>AuthGuard</div>
+              <h1>GitHub Security Findings</h1>
+              <div class="meta">
+                Repository: ${escapeHtml(githubUrl || "GitHub repository")}<br />
+                Generated: ${escapeHtml(new Date().toLocaleString())}
+              </div>
+              <div class="summary">${repoFindings.length} finding(s) exported</div>
             </section>
-          `).join("")}
+            ${repoFindings.map((finding: any) => {
+              const severity = String(finding.severity || "unknown").toLowerCase();
+              const severityClass = severity === "high" ? "severity-high" : severity === "medium" ? "severity-medium" : "severity-low";
+              return `
+                <section class="finding">
+                  <div class="file">${escapeHtml(`${finding.file || "unknown"}:${finding.line || "-"}`)}</div>
+                  <div class="title-row">
+                    <div class="title">${escapeHtml(finding.name || "Finding")}</div>
+                    <div class="severity ${severityClass}">${escapeHtml(finding.severity || "unknown")}</div>
+                  </div>
+                  <div class="snippet">${escapeHtml(finding.snippet || "")}</div>
+                  <div class="recommendation">${escapeHtml(finding.recommendation || "")}</div>
+                </section>
+              `;
+            }).join("")}
+          </div>
           <script>
             window.onload = () => {
               window.print();
