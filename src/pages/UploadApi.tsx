@@ -10,13 +10,49 @@ import { useToast } from "@/hooks/use-toast";
 
 const SPEC_BUCKET = (import.meta.env.VITE_SPEC_BUCKET as string) || "specs";
 
-const mockEndpoints = [
-  { method: "POST", path: "/api/auth/login", type: "Login" },
-  { method: "POST", path: "/api/auth/register", type: "Registration" },
-  { method: "POST", path: "/api/auth/forgot-password", type: "Password Reset" },
-  { method: "POST", path: "/api/auth/refresh-token", type: "Token Refresh" },
-  { method: "GET", path: "/api/auth/me", type: "User Profile" },
-];
+function looksLikeApiSpec(text: string, apiType: string) {
+  const sample = text.slice(0, 5000);
+  if (apiType === "swagger" || apiType === "postman") return true;
+  return (
+    /\bopenapi\b/i.test(sample) ||
+    /\bswagger\b/i.test(sample) ||
+    /(^|\n)\s*paths\s*:/i.test(sample) ||
+    /"paths"\s*:\s*\{/i.test(sample) ||
+    /"collection"\s*:\s*\{/i.test(sample) ||
+    /"item"\s*:\s*\[/i.test(sample)
+  );
+}
+
+function extractSpecLikeEndpoints(text: string) {
+  const endpoints: { method: string; path: string; type: string }[] = [];
+  const seen = new Set<string>();
+  const addEndpoint = (method: string, rawPath: string, type: string) => {
+    const pathValue = String(rawPath || "").trim();
+    if (!pathValue.startsWith("/") || pathValue.length < 2 || pathValue.length > 200) return;
+    const key = `${method}::${pathValue}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    endpoints.push({ method, path: pathValue, type });
+  };
+
+  const pathKeyRegex = /^[ \t]*["']?(\/[A-Za-z0-9._~\-\/{}:,@]+)["']?\s*:\s*$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = pathKeyRegex.exec(text)) !== null) {
+    const pathValue = match[1];
+    const lookahead = text.slice(match.index, match.index + 800);
+    const methodMatches = [...lookahead.matchAll(/^[ \t]*["']?(get|post|put|patch|delete|options|head|trace)["']?\s*:/gim)];
+    for (const methodMatch of methodMatches) {
+      addEndpoint(methodMatch[1].toUpperCase(), pathValue, "heuristic");
+    }
+  }
+
+  const inlineJsonRegex = /"(\/[A-Za-z0-9._~\-\/{}:,@]+)"\s*:\s*\{[\s\S]{0,500}?"(get|post|put|patch|delete|options|head|trace)"\s*:/gi;
+  while ((match = inlineJsonRegex.exec(text)) !== null) {
+    addEndpoint(match[2].toUpperCase(), match[1], "heuristic");
+  }
+
+  return endpoints;
+}
 
 // Lightweight spec parser: extract endpoints from OpenAPI (JSON/YAML) or Postman Collection
 function extractEndpointsFromSpec(text: string, apiType: string) {
@@ -91,6 +127,10 @@ function extractEndpointsFromSpec(text: string, apiType: string) {
       }
       return endpoints;
     }
+
+    if (looksLikeApiSpec(text, apiType)) {
+      return extractSpecLikeEndpoints(text);
+    }
   } catch (err) {
     // parsing failed, return empty
   }
@@ -129,9 +169,11 @@ export default function UploadApi() {
 
     setSelectedFiles(files);
     setStatus("uploading");
+    setDetectedEndpoints(null);
+    setRawServerResponse(null);
+    setRepoFindings(null);
     let successCount = 0;
     let failCount = 0;
-    const firstScanIds: string[] = [];
 
     for (const file of files) {
       try {
@@ -360,26 +402,25 @@ export default function UploadApi() {
                   <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">No authentication endpoints were detected in the uploaded file.</div>
                 )
               ) : (
-                <>
-                  <div className="flex items-center gap-2 mb-6 text-primary">
-                    <CheckCircle2 className="h-5 w-5" />
-                    <span className="font-medium">{mockEndpoints.length} authentication endpoints detected</span>
-                  </div>
-                  <div className="rounded-lg border border-border overflow-hidden">
-                    <div className="bg-secondary/50 px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">Detected Endpoints</div>
-                    {mockEndpoints.map((ep, i) => (
-                      <motion.div key={ep.path} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }} className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
-                        <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-cyber-blue/10 text-cyber-blue" : "bg-primary/10 text-primary"}`}>{ep.method}</span>
-                        <span className="font-mono text-sm flex-1">{ep.path}</span>
-                        <span className="text-xs text-muted-foreground">{ep.type}</span>
-                      </motion.div>
-                    ))}
-                  </div>
-                </>
+                <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
+                  No endpoint data is available for this upload yet.
+                </div>
               )}
 
               <div className="mt-8 flex gap-4">
-                <Button onClick={() => navigate("/scanner", { state: { scanId } })} className="glow-green font-mono">
+                <Button
+                  onClick={() =>
+                    navigate("/scanner", {
+                      state: {
+                        scanId,
+                        endpoints: detectedEndpoints || [],
+                        apiType: fileType?.includes("Postman") ? "postman" : "swagger",
+                        sourceLabel: selectedFiles.map((f) => f.name).join(", ") || "Uploaded API spec",
+                      },
+                    })
+                  }
+                  className="glow-green font-mono"
+                >
                   Run Scanner <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
                 <Button variant="outline" onClick={() => { setStatus("idle"); setScanId(null); }} className="font-mono">Upload Another</Button>

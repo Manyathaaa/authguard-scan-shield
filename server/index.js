@@ -62,6 +62,51 @@ function dedupeFindings(allFindings) {
   return unique;
 }
 
+function looksLikeApiSpec(text, apiType) {
+  const sample = String(text || '').slice(0, 5000);
+  if (apiType === 'swagger' || apiType === 'postman') return true;
+  return (
+    /\bopenapi\b/i.test(sample) ||
+    /\bswagger\b/i.test(sample) ||
+    /(^|\n)\s*paths\s*:/i.test(sample) ||
+    /"paths"\s*:\s*\{/i.test(sample) ||
+    /"collection"\s*:\s*\{/i.test(sample) ||
+    /"item"\s*:\s*\[/i.test(sample)
+  );
+}
+
+function extractSpecLikeEndpoints(text) {
+  const endpoints = [];
+  const seen = new Set();
+  const addEndpoint = (method, rawPath, type) => {
+    const pathValue = String(rawPath || '').trim();
+    if (!pathValue.startsWith('/')) return;
+    if (pathValue.length < 2 || pathValue.length > 200) return;
+    const key = `${method}::${pathValue}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    endpoints.push({ method, path: pathValue, type });
+  };
+
+  const pathKeyRegex = /^[ \t]*["']?(\/[A-Za-z0-9._~\-\/{}:,@]+)["']?\s*:\s*$/gm;
+  let match;
+  while ((match = pathKeyRegex.exec(text)) !== null) {
+    const pathValue = match[1];
+    const lookahead = text.slice(match.index, match.index + 800);
+    const methodMatches = [...lookahead.matchAll(/^[ \t]*["']?(get|post|put|patch|delete|options|head|trace)["']?\s*:/gim)];
+    for (const methodMatch of methodMatches) {
+      addEndpoint(methodMatch[1].toUpperCase(), pathValue, 'heuristic');
+    }
+  }
+
+  const inlineJsonRegex = /"(\/[A-Za-z0-9._~\-\/{}:,@]+)"\s*:\s*\{[\s\S]{0,500}?"(get|post|put|patch|delete|options|head|trace)"\s*:/gi;
+  while ((match = inlineJsonRegex.exec(text)) !== null) {
+    addEndpoint(match[2].toUpperCase(), match[1], 'heuristic');
+  }
+
+  return endpoints;
+}
+
 function extractEndpointsFromText(text, apiType) {
   try {
     // Try JSON parse first
@@ -151,7 +196,11 @@ function extractEndpointsFromText(text, apiType) {
       }
     }
 
-      return endpoints;
+    if (endpoints.length === 0 && looksLikeApiSpec(text, apiType)) {
+      return extractSpecLikeEndpoints(text);
+    }
+
+    return endpoints;
   } catch (e) {
     return [];
   }

@@ -53,6 +53,26 @@ export async function createScan(targetUrl: string, apiType: string, userId: str
   return data;
 }
 
+export async function createScanWithDetails(
+  targetUrl: string,
+  apiType: string,
+  userId: string,
+  endpointsDetected: unknown[] = []
+) {
+  const { data, error } = await supabase
+    .from("scans")
+    .insert({
+      target_url: targetUrl,
+      api_type: apiType,
+      user_id: userId,
+      endpoints_detected: endpointsDetected,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function updateScan(scanId: string, updates: Partial<ScanData>) {
   const { data, error } = await supabase
     .from("scans")
