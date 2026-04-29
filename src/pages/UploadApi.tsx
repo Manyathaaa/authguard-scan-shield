@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, FileJson, CheckCircle2, Loader2, Globe, ArrowRight } from "lucide-react";
+import { Upload, FileJson, CheckCircle2, Loader2, Globe, ArrowRight, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
@@ -186,6 +186,115 @@ export default function UploadApi() {
   const [rawServerResponse, setRawServerResponse] = useState<any | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
+  const exportRepoFindingsPdf = () => {
+    if (!repoFindings || repoFindings.length === 0) return;
+
+    const escapeHtml = (value: unknown) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+
+    const reportHtml = `
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>AuthGuard GitHub Findings</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              margin: 32px;
+              color: #111827;
+              background: #ffffff;
+            }
+            h1 {
+              margin: 0 0 8px;
+              font-size: 28px;
+            }
+            .meta {
+              color: #4b5563;
+              margin-bottom: 24px;
+              font-size: 14px;
+            }
+            .finding {
+              border: 1px solid #d1d5db;
+              border-radius: 10px;
+              padding: 16px;
+              margin-bottom: 16px;
+              page-break-inside: avoid;
+            }
+            .file {
+              color: #6b7280;
+              font-family: monospace;
+              font-size: 12px;
+              margin-bottom: 8px;
+            }
+            .title {
+              font-size: 18px;
+              font-weight: 700;
+              margin-bottom: 8px;
+            }
+            .snippet {
+              font-family: monospace;
+              background: #f3f4f6;
+              padding: 10px;
+              border-radius: 8px;
+              margin-bottom: 10px;
+              white-space: pre-wrap;
+              word-break: break-word;
+            }
+            .recommendation {
+              color: #374151;
+              font-size: 14px;
+            }
+            @media print {
+              body { margin: 20px; }
+            }
+          </style>
+        </head>
+        <body>
+          <h1>AuthGuard GitHub Findings</h1>
+          <div class="meta">
+            Repository: ${escapeHtml(githubUrl || "GitHub repository")}<br />
+            Generated: ${escapeHtml(new Date().toLocaleString())}<br />
+            Findings: ${repoFindings.length}
+          </div>
+          ${repoFindings.map((finding: any) => `
+            <section class="finding">
+              <div class="file">${escapeHtml(`${finding.file || "unknown"}:${finding.line || "-"}`)}</div>
+              <div class="title">${escapeHtml(finding.name || "Finding")} - ${escapeHtml(finding.severity || "unknown")}</div>
+              <div class="snippet">${escapeHtml(finding.snippet || "")}</div>
+              <div class="recommendation">${escapeHtml(finding.recommendation || "")}</div>
+            </section>
+          `).join("")}
+          <script>
+            window.onload = () => {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
+    if (!printWindow) {
+      toast({
+        title: "Export blocked",
+        description: "Allow pop-ups for this site to export the findings as PDF.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(reportHtml);
+    printWindow.document.close();
+  };
+
   const handleUpload = async (type: string) => {
     // Deprecated simulated upload path retained as fallback.
     setFileType(type);
@@ -284,14 +393,6 @@ export default function UploadApi() {
     processFiles(files);
   };
 
-  const handleDrop = (ev: React.DragEvent<HTMLDivElement>) => {
-    ev.preventDefault();
-    const items = Array.from(ev.dataTransfer.files || []);
-    if (items.length) processFiles(items);
-  };
-
-  const handleDragOver = (ev: React.DragEvent<HTMLDivElement>) => ev.preventDefault();
-
   return (
     <div className="min-h-screen pt-24 pb-16">
       <div className="container mx-auto px-4 max-w-4xl">
@@ -302,29 +403,6 @@ export default function UploadApi() {
           className="hidden"
           onChange={handleFileChange}
         />
-        {/* Note: file selection is handled by the drag/drop area below */}
-        {/* Drag and drop area */}
-        <div className="mb-6">
-          <div onDrop={handleDrop} onDragOver={handleDragOver} onClick={() => fileInputRef.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') fileInputRef.current?.click(); }} className="rounded-md border-2 border-dashed border-border p-6 text-center bg-card">
-            <div className="flex items-center justify-center gap-3">
-              <Upload className="h-6 w-6 text-primary" />
-              <div>
-                <div className="font-semibold">Drag & drop files here</div>
-                <div className="text-sm text-muted-foreground">or click to select files</div>
-              </div>
-            </div>
-            {selectedFiles.length > 0 && (
-              <div className="mt-4 text-left">
-                <div className="text-sm font-medium mb-2">Selected files</div>
-                <ul className="space-y-1">
-                  {selectedFiles.map((f) => (
-                    <li key={f.name} className="text-sm text-muted-foreground">{f.name} · {Math.round(f.size/1024)} KB</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        </div>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-3xl font-bold mb-2">Upload API Specification</h1>
           <p className="text-muted-foreground mb-10">
@@ -360,21 +438,26 @@ export default function UploadApi() {
               <div className="mt-4 space-y-2">
                 <div className="flex items-center justify-between gap-4">
                   <h4 className="text-sm font-medium">Findings</h4>
-                  <Button
-                    onClick={() =>
-                      navigate("/scanner", {
-                        state: {
-                          sourceLabel: githubUrl ? `GitHub repo: ${githubUrl}` : "GitHub repository",
-                          apiType: "github",
-                          endpoints: [],
-                          repoFindings,
-                        },
-                      })
-                    }
-                    className="glow-green font-mono"
-                  >
-                    Run Scanner <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button onClick={exportRepoFindingsPdf} variant="outline" className="font-mono">
+                      <Download className="mr-2 h-4 w-4" /> Export PDF
+                    </Button>
+                    <Button
+                      onClick={() =>
+                        navigate("/scanner", {
+                          state: {
+                            sourceLabel: githubUrl ? `GitHub repo: ${githubUrl}` : "GitHub repository",
+                            apiType: "github",
+                            endpoints: [],
+                            repoFindings,
+                          },
+                        })
+                      }
+                      className="glow-green font-mono"
+                    >
+                      Run Scanner <ArrowRight className="ml-2 h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
                 {repoFindings.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No issues found.</p>
