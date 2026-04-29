@@ -358,7 +358,24 @@ export default function UploadApi() {
 
             {repoFindings && (
               <div className="mt-4 space-y-2">
-                <h4 className="text-sm font-medium">Findings</h4>
+                <div className="flex items-center justify-between gap-4">
+                  <h4 className="text-sm font-medium">Findings</h4>
+                  <Button
+                    onClick={() =>
+                      navigate("/scanner", {
+                        state: {
+                          sourceLabel: githubUrl ? `GitHub repo: ${githubUrl}` : "GitHub repository",
+                          apiType: "github",
+                          endpoints: [],
+                          repoFindings,
+                        },
+                      })
+                    }
+                    className="glow-green font-mono"
+                  >
+                    Run Scanner <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
+                </div>
                 {repoFindings.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No issues found.</p>
                 ) : (

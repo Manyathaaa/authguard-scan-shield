@@ -23,6 +23,14 @@ interface TestModule {
   details?: string;
 }
 
+interface RepoFinding {
+  name?: string;
+  severity?: string;
+  file?: string;
+  recommendation?: string;
+  snippet?: string;
+}
+
 const FALLBACK_ENDPOINTS: Endpoint[] = [
   { method: "POST", path: "/auth/login", type: "fallback" },
   { method: "POST", path: "/auth/register", type: "fallback" },
@@ -82,7 +90,61 @@ function buildModules(endpoints: Endpoint[]) {
   ];
 }
 
-function buildMockResults(modules: TestModule[]) {
+function normalizeSeverity(severity: string | undefined) {
+  const value = (severity || "").toLowerCase();
+  if (value === "high" || value === "medium" || value === "low") return value;
+  return "medium";
+}
+
+function buildMockResults(modules: TestModule[], repoFindings: RepoFinding[] = []) {
+  if (repoFindings.length > 0) {
+    const sortedFindings = [...repoFindings].sort((a, b) => {
+      const order = { high: 0, medium: 1, low: 2 };
+      return order[normalizeSeverity(a.severity)] - order[normalizeSeverity(b.severity)];
+    });
+    const pickFinding = (index: number) => sortedFindings[index] || null;
+    const toResult = (finding: RepoFinding | null, fallback: { details: string; recommendation: string }) => {
+      if (!finding) {
+        return {
+          status: "pass" as const,
+          details: fallback.details,
+          riskLevel: "low",
+          recommendation: fallback.recommendation,
+        };
+      }
+      const severity = normalizeSeverity(finding.severity);
+      return {
+        status: severity === "high" ? "fail" as const : severity === "medium" ? "warn" as const : "pass" as const,
+        details: `${finding.name || "Repository finding"}${finding.file ? ` in ${finding.file}` : ""}${finding.snippet ? `: ${finding.snippet}` : ""}`,
+        riskLevel: severity,
+        recommendation: finding.recommendation || fallback.recommendation,
+      };
+    };
+
+    return {
+      rate: toResult(pickFinding(0), {
+        details: "No rate-limiting-specific repository finding was surfaced.",
+        recommendation: "Review authentication endpoints for throttling and retry controls.",
+      }),
+      password: toResult(pickFinding(1), {
+        details: "No password-policy-specific repository finding was surfaced.",
+        recommendation: "Review password validation and reset flows in the repository.",
+      }),
+      brute: toResult(pickFinding(2), {
+        details: "No brute-force-specific repository finding was surfaced.",
+        recommendation: "Review login and admin endpoints for anti-automation controls.",
+      }),
+      jwt: toResult(pickFinding(3), {
+        details: "No token-handling-specific repository finding was surfaced.",
+        recommendation: "Review JWT and session management code paths.",
+      }),
+      lockout: toResult(pickFinding(4), {
+        details: "No account-lockout-specific repository finding was surfaced.",
+        recommendation: "Review lockout, alerting, and account recovery behavior.",
+      }),
+    };
+  }
+
   const endpointLabel = (ep: Endpoint | null) => ep ? `${ep.method} ${ep.path}` : "the selected endpoint";
   const rateProfile = endpointRiskProfile(modules.find((m) => m.id === "rate")?.endpoint || null);
   const passwordProfile = endpointRiskProfile(modules.find((m) => m.id === "password")?.endpoint || null);
@@ -134,11 +196,15 @@ export default function Scanner() {
   const passedEndpoints = ((location.state as any)?.endpoints || []) as Endpoint[];
   const passedApiType = ((location.state as any)?.apiType as string | undefined) || "swagger";
   const sourceLabel = ((location.state as any)?.sourceLabel as string | undefined) || "Uploaded API spec";
+  const passedRepoFindings = ((location.state as any)?.repoFindings || []) as RepoFinding[];
+  const persistedApiType = passedApiType === "postman" ? "postman" : "swagger";
 
   const resolvedEndpoints = useMemo(() => {
     const cleaned = passedEndpoints.filter((ep) => ep && ep.path);
-    return cleaned.length > 0 ? cleaned : FALLBACK_ENDPOINTS;
-  }, [passedEndpoints]);
+    if (cleaned.length > 0) return cleaned;
+    if (passedApiType === "github" || passedRepoFindings.length > 0) return [];
+    return FALLBACK_ENDPOINTS;
+  }, [passedEndpoints, passedApiType, passedRepoFindings]);
 
   const baseModules = useMemo(() => buildModules(resolvedEndpoints), [resolvedEndpoints]);
 
@@ -150,7 +216,7 @@ export default function Scanner() {
 
   const runScan = async () => {
     const nextModules = buildModules(resolvedEndpoints);
-    const mockResults = buildMockResults(nextModules);
+    const mockResults = buildMockResults(nextModules, passedRepoFindings);
 
     setScanning(true);
     setComplete(false);
@@ -165,17 +231,18 @@ export default function Scanner() {
         try {
           const scan = await createScanWithDetails(
             sourceLabel,
-            passedApiType,
+            persistedApiType,
             user!.id,
             resolvedEndpoints
           );
           scanId = scan.id;
         } catch (err) {
-          if (!isMissingSchemaError(err)) throw err;
           persistToSupabase = false;
           toast({
             title: "Running without database persistence",
-            description: "The Supabase scans tables are missing, so this scan will run locally and won’t be saved to the dashboard yet.",
+            description: isMissingSchemaError(err)
+              ? "The Supabase scans tables are missing, so this scan will run locally and won’t be saved to the dashboard yet."
+              : "This scan could not be saved to the database, so it will run locally and still show results.",
             variant: "destructive",
           });
         }
@@ -184,12 +251,21 @@ export default function Scanner() {
       setActiveScanId(scanId ?? null);
 
       if (scanId && persistToSupabase) {
-        await updateScan(scanId, {
-          status: "running",
-          target_url: sourceLabel,
-          api_type: passedApiType,
-          endpoints_detected: resolvedEndpoints,
-        });
+        try {
+          await updateScan(scanId, {
+            status: "running",
+            target_url: sourceLabel,
+            api_type: persistedApiType,
+            endpoints_detected: resolvedEndpoints,
+          });
+        } catch (err) {
+          persistToSupabase = false;
+          toast({
+            title: "Running without database persistence",
+            description: "Updating the scan in Supabase failed, so this run will continue locally.",
+            variant: "destructive",
+          });
+        }
       }
 
       nextModules.forEach((mod, i) => {
@@ -220,7 +296,7 @@ export default function Scanner() {
             const scanPayload = {
               id: scanId || `local-${Date.now()}`,
               target_url: sourceLabel,
-              api_type: passedApiType,
+              api_type: persistedApiType,
               status: "completed",
               security_score: score,
               endpoints_detected: resolvedEndpoints,
@@ -232,6 +308,7 @@ export default function Scanner() {
                 updateScan(scanId!, {
                   status: "completed",
                   security_score: score,
+                  api_type: persistedApiType,
                   endpoints_detected: resolvedEndpoints,
                 });
                 setLocalReport({
@@ -291,17 +368,24 @@ export default function Scanner() {
             <div className="text-xs font-mono text-muted-foreground mb-2">Scan target</div>
             <div className="text-sm">{sourceLabel}</div>
             <div className="mt-3 text-xs font-mono text-muted-foreground mb-2">Endpoints in scope</div>
-            <div className="space-y-2">
-              {resolvedEndpoints.slice(0, 5).map((ep, index) => (
-                <div key={`${ep.method}-${ep.path}-${index}`} className="flex items-center gap-3 text-sm">
-                  <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-primary">{ep.method}</span>
-                  <span className="font-mono">{ep.path}</span>
-                </div>
-              ))}
-              {resolvedEndpoints.length > 5 && (
-                <div className="text-xs text-muted-foreground">+ {resolvedEndpoints.length - 5} more endpoints</div>
-              )}
-            </div>
+            {resolvedEndpoints.length > 0 ? (
+              <div className="space-y-2">
+                {resolvedEndpoints.slice(0, 5).map((ep, index) => (
+                  <div key={`${ep.method}-${ep.path}-${index}`} className="flex items-center gap-3 text-sm">
+                    <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-primary">{ep.method}</span>
+                    <span className="font-mono">{ep.path}</span>
+                  </div>
+                ))}
+                {resolvedEndpoints.length > 5 && (
+                  <div className="text-xs text-muted-foreground">+ {resolvedEndpoints.length - 5} more endpoints</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                Using repository findings as scan context.
+                {passedRepoFindings.length > 0 ? ` ${passedRepoFindings.length} finding(s) available from the GitHub scan.` : ""}
+              </div>
+            )}
           </div>
           <Button onClick={runScan} disabled={scanning} className="glow-green font-mono mb-10">
             {scanning ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Scanning...</>) : (<><Play className="mr-2 h-4 w-4" /> {complete ? "Rescan" : "Start Scan"}</>)}
