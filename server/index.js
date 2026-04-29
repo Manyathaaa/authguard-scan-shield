@@ -14,6 +14,7 @@ try {
 }
 const AdmZip = require('adm-zip');
 const tar = require('tar');
+const yaml = require('js-yaml');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -59,6 +60,101 @@ function dedupeFindings(allFindings) {
   const sevOrder = { high: 0, medium: 1, low: 2 };
   unique.sort((a, b) => (sevOrder[a.severity] - sevOrder[b.severity]) || a.file.localeCompare(b.file) || a.line - b.line);
   return unique;
+}
+
+function extractEndpointsFromText(text, apiType) {
+  try {
+    // Try JSON parse first
+    let doc = null;
+    try { doc = JSON.parse(text); } catch (e) { doc = null; }
+
+    const endpoints = [];
+    if (apiType === 'postman' || (doc && doc.item)) {
+      const parsed = doc || JSON.parse(text);
+      const walk = (items) => {
+        for (const it of items) {
+          if (it.request) {
+            const method = (it.request.method || 'GET').toUpperCase();
+            let url = '';
+            if (typeof it.request.url === 'string') url = it.request.url;
+            else if (it.request.url && it.request.url.raw) url = it.request.url.raw;
+            else if (it.request.url && it.request.url.path) url = '/' + (Array.isArray(it.request.url.path) ? it.request.url.path.join('/') : String(it.request.url.path));
+            endpoints.push({ method, path: url, type: 'postman' });
+          }
+          if (it.item && Array.isArray(it.item)) walk(it.item);
+        }
+      };
+      if (parsed.item && Array.isArray(parsed.item)) walk(parsed.item);
+      return endpoints;
+    }
+
+    // OpenAPI/Swagger
+    if (!doc) {
+      // try YAML parse
+      try { doc = yaml.load(text); } catch (e) { /* ignore */ }
+    }
+    if (doc && doc.paths) {
+      const validMethods = new Set(['get','post','put','patch','delete','head','options','trace']);
+      for (const p of Object.keys(doc.paths)) {
+        const target = doc.paths[p] || {};
+        // prefer wrapper-style (methods/operations) which contain real verb keys
+        const wrapperKeys = ['methods', 'operations', 'x-methods', 'httpMethods'];
+        let found = false;
+        for (const wk of wrapperKeys) {
+          if (target[wk] && typeof target[wk] === 'object') {
+            const inner = target[wk];
+            for (const m of Object.keys(inner)) {
+              if (validMethods.has(m.toLowerCase())) { endpoints.push({ method: m.toUpperCase(), path: p, type: 'openapi' }); found = true; }
+            }
+            if (found) break;
+          }
+        }
+        if (found) continue;
+
+        // direct methods (e.g. post/get) - only accept known HTTP verbs
+        const directMethods = Object.keys(target).filter(k => validMethods.has(k.toLowerCase()));
+        if (directMethods.length) {
+          for (const m of directMethods) endpoints.push({ method: m.toUpperCase(), path: p, type: 'openapi' });
+          continue;
+        }
+
+        // fallback: check child objects for verb keys
+        const childKeys = Object.keys(target);
+        for (const ck of childKeys) {
+          const child = target[ck];
+          if (child && typeof child === 'object') {
+            const maybeMethods = Object.keys(child).filter(k => validMethods.has(k.toLowerCase()));
+            if (maybeMethods.length) {
+              for (const m of maybeMethods) endpoints.push({ method: m.toUpperCase(), path: p, type: 'openapi' });
+              found = true; break;
+            }
+          }
+        }
+      }
+      return endpoints;
+    }
+
+    // Fallback: quick YAML heuristic for 'paths:' block
+    const yamlPathsMatch = /(^|\n)paths:\s*\n([\s\S]*)$/i.exec(text);
+    if (yamlPathsMatch) {
+      const rest = yamlPathsMatch[2];
+      const lines = rest.split(/\r?\n/);
+      let currentPath = null;
+      for (const line of lines) {
+        const pathLine = line.match(/^\s{2,}([\/~A-Za-z0-9_\-{}:\[\]\.@,]+):\s*$/);
+        if (pathLine) { currentPath = pathLine[1].trim(); continue; }
+        if (currentPath) {
+          const methodLine = line.match(/^\s{4,}([a-z]+):\s*$/i);
+          if (methodLine) endpoints.push({ method: methodLine[1].toUpperCase(), path: currentPath, type: 'openapi' });
+          if (/^\S/.test(line)) currentPath = null;
+        }
+      }
+    }
+
+      return endpoints;
+  } catch (e) {
+    return [];
+  }
 }
 
 async function extractArchive(buffer, destDir) {
@@ -290,6 +386,7 @@ app.post('/api/upload', async (req, res) => {
 
   const tmpdir = tmp.dirSync({ unsafeCleanup: true }).name;
   const allFindings = [];
+  let endpoints = [];
   try {
     for (const f of files) {
       const name = f.name || 'file';
@@ -330,6 +427,11 @@ app.post('/api/upload', async (req, res) => {
 
       // non-archive: scan raw content
       const content = buf.toString('utf8');
+      // attempt to extract endpoints from uploaded spec content
+      try {
+        const eps = extractEndpointsFromText(content, apiType);
+        if (eps && eps.length) endpoints = (endpoints || []).concat(eps);
+      } catch (e) {}
       const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -348,7 +450,17 @@ app.post('/api/upload', async (req, res) => {
 
     const dedup = dedupeFindings(allFindings);
     await persistScanToSupabase({ repo: null, findings: dedup, source: 'upload' });
-    return res.json({ findings: dedup });
+    // dedupe endpoints too
+    const uniqEndpoints = [];
+    const seenE = new Set();
+    if (typeof endpoints !== 'undefined' && Array.isArray(endpoints)) {
+      for (const e of endpoints) {
+        const k = `${(e.method||'GET')}::${e.path}`;
+        if (!seenE.has(k)) { seenE.add(k); uniqEndpoints.push(e); }
+      }
+    }
+  console.log('upload scan: found endpoints:', uniqEndpoints);
+  return res.json({ findings: dedup, endpoints: uniqEndpoints });
   } catch (e) {
     console.error('Upload scan error', e);
     return res.status(500).json({ error: String(e) });
@@ -358,4 +470,67 @@ app.post('/api/upload', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`GitHub scan server listening on http://localhost:${PORT}`));
+const server = app.listen(PORT, () => console.log(`GitHub scan server listening on http://localhost:${PORT}`));
+
+// Graceful shutdown helper
+function gracefulShutdown(reason, err, code = 1) {
+  try {
+    if (err) {
+      console.error(`Shutting down due to ${reason}:`, err && err.stack ? err.stack : err);
+    } else {
+      console.log(`Shutting down due to ${reason}`);
+    }
+    // stop accepting new connections
+    if (server && server.close) {
+      server.close(() => {
+        console.log('Server closed. Exiting.');
+        process.exit(code);
+      });
+      // Force exit if close hangs
+      setTimeout(() => {
+        console.error('Forcing exit after timeout.');
+        process.exit(code);
+      }, 5000).unref();
+    } else {
+      process.exit(code);
+    }
+  } catch (shutdownErr) {
+    console.error('Error during graceful shutdown:', shutdownErr);
+    process.exit(code);
+  }
+}
+
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use.`);
+    console.error(`A server is probably already running on http://localhost:${PORT}`);
+    console.error('Stop the existing process or start this server with a different port, for example:');
+    console.error(`PORT=${Number(PORT) + 1} npm start`);
+    // Use graceful shutdown flow to ensure logs flush
+    return gracefulShutdown('EADDRINUSE', err, 1);
+  }
+
+  console.error('Server error:', err);
+  return gracefulShutdown('server error', err, 1);
+});
+
+// Global process-level handlers for more robust error reporting and cleanup
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // try to shutdown gracefully
+  gracefulShutdown('unhandledRejection', reason, 1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err && err.stack ? err.stack : err);
+  // best-effort graceful shutdown
+  gracefulShutdown('uncaughtException', err, 1);
+});
+
+// Handle termination signals (CTRL+C, systemd stop, etc.) and exit cleanly
+['SIGINT', 'SIGTERM'].forEach((sig) => {
+  process.on(sig, () => {
+    console.log(`Received ${sig}, initiating graceful shutdown...`);
+    gracefulShutdown(sig, null, 0);
+  });
+});

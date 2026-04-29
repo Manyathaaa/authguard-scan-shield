@@ -18,6 +18,85 @@ const mockEndpoints = [
   { method: "GET", path: "/api/auth/me", type: "User Profile" },
 ];
 
+// Lightweight spec parser: extract endpoints from OpenAPI (JSON/YAML) or Postman Collection
+function extractEndpointsFromSpec(text: string, apiType: string) {
+  try {
+    if (apiType === 'postman' || text.trim().startsWith('{')) {
+      // Try JSON parsing first
+      const parsed = JSON.parse(text);
+      // Postman collection v2 has item arrays with request.method and request.url
+      if (parsed?.item && Array.isArray(parsed.item)) {
+        const endpoints: any[] = [];
+        const walkItems = (items: any[]) => {
+          for (const it of items) {
+            if (it.request) {
+              const method = (it.request.method || 'GET').toUpperCase();
+              let url = '';
+              if (typeof it.request.url === 'string') url = it.request.url;
+              else if (it.request.url && it.request.url.raw) url = it.request.url.raw;
+              else if (it.request.url && it.request.url.path) url = '/' + (Array.isArray(it.request.url.path) ? it.request.url.path.join('/') : String(it.request.url.path));
+              endpoints.push({ method, path: url, type: 'Detected' });
+            }
+            if (it.item && Array.isArray(it.item)) walkItems(it.item);
+          }
+        };
+        walkItems(parsed.item);
+        return endpoints;
+      }
+    }
+
+    // Try OpenAPI (JSON or YAML). We'll attempt JSON parse first, then YAML via dynamic import if available.
+    let doc: any;
+    try { doc = JSON.parse(text); } catch (e) { }
+    if (!doc) {
+      // Lightweight YAML parsing for common OpenAPI files (paths/methods)
+      // This avoids adding a heavy dependency in the frontend and handles typical YAML structure.
+      const yamlPathsMatch = /(^|\n)paths:\s*\n([\s\S]*)$/i.exec(text);
+      if (yamlPathsMatch) {
+        const rest = yamlPathsMatch[2];
+        // Match path entries that start with whitespace then '/something':
+        const pathRegex = /^\s{2,}([\/~A-Za-z0-9_\-{}:\[\]\.@\,]+):\s*\n([\s\S]*?)(?=^\s{2,}[\/~A-Za-z0-9_\-{}:\[\]\.@\,]+:|\n[^\s])/gim;
+        const endpoints: any[] = [];
+        // Fallback simpler parsing: look for lines that start with two spaces then '/'
+        const lines = rest.split(/\r?\n/);
+        let currentPath: string | null = null;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const pathLine = line.match(/^\s{2,}([\/~A-Za-z0-9_\-{}:\[\]\.@\,]+):\s*$/);
+          if (pathLine) {
+            currentPath = pathLine[1].trim();
+            continue;
+          }
+          if (currentPath) {
+            const methodLine = line.match(/^\s{4,}([a-z]+):\s*$/i);
+            if (methodLine) {
+              endpoints.push({ method: methodLine[1].toUpperCase(), path: currentPath, type: 'Detected' });
+            }
+            // stop if indentation goes back to top-level
+            if (/^\S/.test(line)) { currentPath = null; }
+          }
+        }
+        if (endpoints.length) return endpoints;
+      }
+      doc = null;
+    }
+
+    if (doc && doc.paths) {
+      const endpoints: any[] = [];
+      for (const p of Object.keys(doc.paths)) {
+        const methods = Object.keys(doc.paths[p] || {});
+        for (const m of methods) {
+          endpoints.push({ method: m.toUpperCase(), path: p, type: 'Detected' });
+        }
+      }
+      return endpoints;
+    }
+  } catch (err) {
+    // parsing failed, return empty
+  }
+  return [];
+}
+
 export default function UploadApi() {
   const [status, setStatus] = useState<"idle" | "uploading" | "done">("idle");
   const [fileType, setFileType] = useState<string>("");
@@ -27,6 +106,8 @@ export default function UploadApi() {
   const navigate = useNavigate();
   const [githubUrl, setGithubUrl] = useState("");
   const [repoFindings, setRepoFindings] = useState<any[] | null>(null);
+  const [detectedEndpoints, setDetectedEndpoints] = useState<{ method: string; path: string; type?: string }[] | null>(null);
+  const [rawServerResponse, setRawServerResponse] = useState<any | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const handleUpload = async (type: string) => {
@@ -54,13 +135,37 @@ export default function UploadApi() {
 
     for (const file of files) {
       try {
-          const apiType = fileType.includes("Swagger") ? "swagger" : "postman";
-          // Read file contents and POST to server /api/upload for scanning
+          // determine apiType: prefer explicit selection, otherwise try to detect from file contents
           const text = await file.text();
+          let apiType = fileType && fileType.includes("Swagger") ? "swagger" : "postman";
+          const trimmed = text.trim();
+          if (!fileType) {
+            if (/\bopenapi\b|\bswagger\b|\bpaths\b/i.test(trimmed) || trimmed.startsWith('openapi') || trimmed.startsWith('{"openapi') || /^paths:\s*$/m.test(trimmed)) {
+              apiType = 'swagger';
+            } else if (/"collection"\s*:\s*\{/i.test(trimmed) || /"item"\s*:\s*\[/i.test(trimmed)) {
+              apiType = 'postman';
+            }
+          }
+
+          // Try to extract endpoints locally from Swagger/OpenAPI or Postman collection
+          try {
+            const endpoints = extractEndpointsFromSpec(text, apiType) || [];
+            // always set detectedEndpoints (use empty array when nothing found)
+            setDetectedEndpoints(endpoints);
+          } catch (e) {
+            setDetectedEndpoints([]);
+          }
+
+          // Read file contents and POST to server /api/upload for scanning
           const base64 = btoa(unescape(encodeURIComponent(text)));
           const resp = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, content: base64 }], apiType }) });
           const data = await resp.json();
+          setRawServerResponse(data);
           if (!resp.ok) throw new Error(data.error || 'Upload scan failed');
+          // If the server returned endpoints, prefer them (more reliable than the frontend heuristic)
+          if (data.endpoints && Array.isArray(data.endpoints)) {
+            setDetectedEndpoints(data.endpoints.map((e: any) => ({ method: (e.method || 'GET').toUpperCase(), path: e.path || e.url || e.route || '/', type: e.type || 'Detected' })));
+          }
           // If there are findings, show them in repoFindings area
           if (data.findings && data.findings.length > 0) {
             setRepoFindings(data.findings);
@@ -233,21 +338,45 @@ export default function UploadApi() {
         <AnimatePresence>
           {status === "done" && (
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="flex items-center gap-2 mb-6 text-primary">
-                <CheckCircle2 className="h-5 w-5" />
-                <span className="font-medium">{mockEndpoints.length} authentication endpoints detected</span>
-              </div>
-
-              <div className="rounded-lg border border-border overflow-hidden">
-                <div className="bg-secondary/50 px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">Detected Endpoints</div>
-                {mockEndpoints.map((ep, i) => (
-                  <motion.div key={ep.path} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }} className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
-                    <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-cyber-blue/10 text-cyber-blue" : "bg-primary/10 text-primary"}`}>{ep.method}</span>
-                    <span className="font-mono text-sm flex-1">{ep.path}</span>
-                    <span className="text-xs text-muted-foreground">{ep.type}</span>
-                  </motion.div>
-                ))}
-              </div>
+              {detectedEndpoints !== null ? (
+                detectedEndpoints.length > 0 ? (
+                  <>
+                    <div className="flex items-center gap-2 mb-6 text-primary">
+                      <CheckCircle2 className="h-5 w-5" />
+                      <span className="font-medium">{detectedEndpoints.length} authentication endpoints detected</span>
+                    </div>
+                    <div className="rounded-lg border border-border overflow-hidden">
+                      <div className="bg-secondary/50 px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">Detected Endpoints</div>
+                      {detectedEndpoints.map((ep, i) => (
+                        <motion.div key={`${ep.method}-${ep.path}-${i}`} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }} className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                          <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-cyber-blue/10 text-cyber-blue" : "bg-primary/10 text-primary"}`}>{ep.method}</span>
+                          <span className="font-mono text-sm flex-1">{ep.path}</span>
+                          <span className="text-xs text-muted-foreground">{ep.type}</span>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">No authentication endpoints were detected in the uploaded file.</div>
+                )
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 mb-6 text-primary">
+                    <CheckCircle2 className="h-5 w-5" />
+                    <span className="font-medium">{mockEndpoints.length} authentication endpoints detected</span>
+                  </div>
+                  <div className="rounded-lg border border-border overflow-hidden">
+                    <div className="bg-secondary/50 px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">Detected Endpoints</div>
+                    {mockEndpoints.map((ep, i) => (
+                      <motion.div key={ep.path} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }} className="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                        <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-cyber-blue/10 text-cyber-blue" : "bg-primary/10 text-primary"}`}>{ep.method}</span>
+                        <span className="font-mono text-sm flex-1">{ep.path}</span>
+                        <span className="text-xs text-muted-foreground">{ep.type}</span>
+                      </motion.div>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <div className="mt-8 flex gap-4">
                 <Button onClick={() => navigate("/scanner", { state: { scanId } })} className="glow-green font-mono">
@@ -255,6 +384,12 @@ export default function UploadApi() {
                 </Button>
                 <Button variant="outline" onClick={() => { setStatus("idle"); setScanId(null); }} className="font-mono">Upload Another</Button>
               </div>
+              {rawServerResponse && (
+                <div className="mt-6 p-3 rounded border bg-card text-xs font-mono text-muted-foreground">
+                  <div className="font-medium mb-2">Server response (debug)</div>
+                  <pre className="whitespace-pre-wrap">{JSON.stringify(rawServerResponse, null, 2)}</pre>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
