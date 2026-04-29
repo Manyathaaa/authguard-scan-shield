@@ -69,6 +69,7 @@ export default function Report() {
   const highCount = vulnerabilities.filter((v) => v.risk_level === "high").length;
   const medCount = vulnerabilities.filter((v) => v.risk_level === "medium").length;
   const lowCount = vulnerabilities.filter((v) => v.risk_level === "low").length;
+  const detectedEndpoints = Array.isArray(scan.endpoints_detected) ? scan.endpoints_detected : [];
 
   const riskIcon = (level: string) => {
     if (level === "high") return XCircle;
@@ -123,6 +124,19 @@ export default function Report() {
           <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
             <Shield className="h-5 w-5 text-primary" /> Findings & Recommendations
           </h2>
+          {detectedEndpoints.length > 0 && (
+            <div className="mb-8 rounded-lg border border-border bg-card overflow-hidden">
+              <div className="px-4 py-3 text-sm font-mono text-muted-foreground border-b border-border">Endpoints Scanned</div>
+              <div className="divide-y divide-border">
+                {detectedEndpoints.map((ep: any, index: number) => (
+                  <div key={`${ep.method}-${ep.path}-${index}`} className="flex items-center gap-3 px-4 py-3 text-sm">
+                    <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-primary">{ep.method || "GET"}</span>
+                    <span className="font-mono">{ep.path || "/"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="space-y-4">
             {vulnerabilities.map((v, i) => {
               const Icon = riskIcon(v.risk_level);

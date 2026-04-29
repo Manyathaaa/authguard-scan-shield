@@ -15,6 +15,7 @@ try {
 const AdmZip = require('adm-zip');
 const tar = require('tar');
 const yaml = require('js-yaml');
+const { PDFParse } = require('pdf-parse');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -225,6 +226,20 @@ async function extractArchive(buffer, destDir) {
   } catch (err) {
     return false;
   }
+}
+
+async function readUploadedText(name, buffer) {
+  const lowerName = String(name || '').toLowerCase();
+  if (lowerName.endsWith('.pdf')) {
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const parsed = await parser.getText();
+      return parsed.text || '';
+    } finally {
+      await parser.destroy();
+    }
+  }
+  return buffer.toString('utf8');
 }
 
 async function persistScanToSupabase(scan) {
@@ -474,8 +489,8 @@ app.post('/api/upload', async (req, res) => {
         }
       }
 
-      // non-archive: scan raw content
-      const content = buf.toString('utf8');
+      // non-archive: scan raw content (including text extracted from PDFs)
+      const content = await readUploadedText(name, buf);
       // attempt to extract endpoints from uploaded spec content
       try {
         const eps = extractEndpointsFromText(content, apiType);
